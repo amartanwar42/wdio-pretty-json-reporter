@@ -562,7 +562,7 @@ export default class CtrfReporter extends WDIOReporter {
     if (normalized === 'pass' || normalized === 'passed') return 'passed';
     if (normalized === 'fail' || normalized === 'failed') return 'failed';
     if (normalized === 'skip' || normalized === 'skipped') return 'skipped';
-    if (normalized === 'pending') return 'pending';
+    if (normalized === 'pending') return 'skipped';
     return hasError ? 'failed' : 'other';
   }
 
