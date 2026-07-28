@@ -2,6 +2,14 @@
   "name": "wdio-pretty-json-reporter",
   "version": "1.0.0",
   "description": "CTRF JSON reporter for WebdriverIO with auto-capture service, hooks, retries, and attachments.",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hellobetter/wdio-pretty-json-reporter"
+  },
+  "homepage": "https://github.com/hellobetter/wdio-pretty-json-reporter#readme",
+  "bugs": {
+    "url": "https://github.com/hellobetter/wdio-pretty-json-reporter/issues"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

@@ -341,6 +341,29 @@ import type {
 
 ---
 
+## Open Source & Contributing
+
+This project is **open source** and licensed under the **MIT License**.
+
+- 📖 **License**: [MIT](LICENSE) — Free to use, modify, and distribute
+- 🐛 **Report Issues**: [GitHub Issues](https://github.com/hellobetter/wdio-pretty-json-reporter/issues)
+- 🤝 **Contribute**: Contributions are welcome! Fork the repo and submit a PR
+- ⭐ **Star Us**: Show your support by starring the [repository](https://github.com/hellobetter/wdio-pretty-json-reporter)
+
+### Contributing
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/my-feature`
+3. Make your changes and run tests: `npm test && npm run lint`
+4. Commit: `git commit -am 'Add my feature'`
+5. Push to branch: `git push origin feature/my-feature`
+6. Open a Pull Request
+
+---
+
 ## License
 
-MIT
+**MIT License** © 2026 Amar Tanwar
+
+See [LICENSE](LICENSE) file for details.
+
