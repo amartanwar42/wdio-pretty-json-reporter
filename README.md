@@ -67,7 +67,6 @@ npm install --save-dev @wdio/reporter @wdio/types
 ```typescript
 import type { Options } from '@wdio/types';
 import CtrfReporter from 'wdio-pretty-json-reporter';
-import CtrfService from 'wdio-pretty-json-reporter/service';
 
 export const config: Options.Testrunner = {
   // ... other config
@@ -76,35 +75,13 @@ export const config: Options.Testrunner = {
     'spec',
     [CtrfReporter, {
       outputDir: './ctrf',
-      outputFile: 'wdio-ctrf-report.json',
       captureLogs: true,
-      includeHooks: true,
-      includeRetries: true,
-      markFlaky: true,
-      tags: ['appium', 'e2e'],
-      testType: 'e2e',
-    }],
-  ],
-
-  services: [
-    [CtrfService, {
-      screenshot: {
-        enabled: true,
-        path: './screenshots',
-        onFailureOnly: true,
-      },
-      pageSource: {
-        enabled: true,
-        onFailureOnly: true,
-      },
-      attachLogs: [
-        './logs/appium.log',
-      ],
-      appiumLogPath: './logs/appium.log',
     }],
   ],
 };
 ```
+
+Hook inclusion, retry history, flaky marking, and hierarchical suite grouping are always enabled.
 
 Important: do not use `'wdio-pretty-json-reporter'` as a reporter string. WDIO will try to resolve it as `wdio-wdio-pretty-json-reporter-reporter`.
 
@@ -153,9 +130,6 @@ cat ./ctrf/wdio-ctrf-report.json | jq '.summary'
 | `outputFile` | `string` | `wdio-ctrf-report.json` | Report filename |
 | `logLevel` | `string` | `info` | `trace` / `debug` / `info` / `warn` / `error` / `silent` |
 | `captureLogs` | `boolean` | `true` | Capture console logs into report |
-| `includeHooks` | `boolean` | `true` | Include `before`/`after`/`beforeEach`/`afterEach` |
-| `includeRetries` | `boolean` | `true` | Include per-attempt retry history |
-| `markFlaky` | `boolean` | `true` | Mark tests as `flaky` if passed after retries |
 | `environment` | `object` | `{}` | Custom environment metadata |
 | `tags` | `string[]` | `[]` | Tags applied to every test |
 | `testType` | `string` | `e2e` | Test type annotation |

@@ -19,9 +19,6 @@ export interface CtrfReporterOptions extends Reporters.Options {
   outputFile?: string;
   logLevel?: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'silent';
   captureLogs?: boolean;
-  includeHooks?: boolean;
-  includeRetries?: boolean;
-  markFlaky?: boolean;
   environment?: Partial<CtrfEnvironment>;
   tags?: string[];
   testType?: string;
@@ -51,10 +48,14 @@ type LogLevel = (typeof LOG_LEVELS)[number];
 
 export default class CtrfReporter extends WDIOReporter {
   private opts: Required<Pick<CtrfReporterOptions,
-    'outputDir' | 'outputFile' | 'logLevel' | 'captureLogs' |
-    'includeHooks' | 'includeRetries' | 'markFlaky' | 'tags' | 'testType' | 'metadata' | 
-    'structureByHooks' | 'captureGlobalHookLogs'
-  >> & Pick<CtrfReporterOptions, 'environment' | 'transformTest' | 'onComplete'>;
+    'outputDir' | 'outputFile' | 'logLevel' | 'captureLogs' | 'tags' | 'testType' | 'metadata'
+  >> & Pick<CtrfReporterOptions, 'environment' | 'transformTest' | 'onComplete'> & {
+    includeHooks: true;
+    includeRetries: true;
+    markFlaky: true;
+    structureByHooks: true;
+    captureGlobalHookLogs: true;
+  };
 
   private report: CtrfReport;
   private testMap = new Map<string, InternalTestState>();
@@ -74,14 +75,14 @@ export default class CtrfReporter extends WDIOReporter {
       outputFile: options.outputFile ?? 'wdio-ctrf-report.json',
       logLevel: options.logLevel ?? 'info',
       captureLogs: options.captureLogs ?? true,
-      includeHooks: options.includeHooks ?? true,
-      includeRetries: options.includeRetries ?? true,
-      markFlaky: options.markFlaky ?? true,
       tags: options.tags ?? [],
       testType: options.testType ?? 'e2e',
       metadata: options.metadata ?? {},
-      structureByHooks: options.structureByHooks ?? true,
-      captureGlobalHookLogs: options.captureGlobalHookLogs ?? (options.structureByHooks ?? true),
+      includeHooks: true,
+      includeRetries: true,
+      markFlaky: true,
+      structureByHooks: true,
+      captureGlobalHookLogs: true,
       environment: options.environment ?? {},
       transformTest: options.transformTest,
       onComplete: options.onComplete,

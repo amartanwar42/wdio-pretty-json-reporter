@@ -200,12 +200,6 @@ export interface CtrfReporterOptions {
   logLevel?: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'silent';
   /** Capture console logs into report (default: true) */
   captureLogs?: boolean;
-  /** Include hook details (default: true) */
-  includeHooks?: boolean;
-  /** Include retry details (default: true) */
-  includeRetries?: boolean;
-  /** Mark tests flaky if passed after retries (default: true) */
-  markFlaky?: boolean;
   /** Custom environment metadata */
   environment?: Partial<CtrfEnvironment>;
   /** Tags applied to every test */
@@ -218,10 +212,6 @@ export interface CtrfReporterOptions {
   transformTest?: (test: CtrfTest) => CtrfTest | null;
   /** Callback after report is written */
   onComplete?: (report: CtrfReport, outputPath: string) => void | Promise<void>;
-  /** Structure report by suites with global hooks outside tests (default: false) */
-  structureByHooks?: boolean;
-  /** Capture logs from global (before/after all) hooks (default: true when structureByHooks is true) */
-  captureGlobalHookLogs?: boolean;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
