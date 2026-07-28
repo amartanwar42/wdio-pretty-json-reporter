@@ -10,6 +10,7 @@ import type {
   CtrfEnvironment,
   CtrfLogEntry,
   CtrfAttachment,
+  CtrfSuite,
 } from './types';
 import * as shared from './shared-state';
 
@@ -41,6 +42,8 @@ interface InternalTestState {
 
 interface InternalSuiteState {
   hooks: CtrfHook[];
+  globalHooks: CtrfHook[]; // before all / after all
+  globalHookLogs: CtrfLogEntry[]; // logs from global hooks
 }
 
 const LOG_LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'silent'] as const;
@@ -49,7 +52,8 @@ type LogLevel = (typeof LOG_LEVELS)[number];
 export default class CtrfReporter extends WDIOReporter {
   private opts: Required<Pick<CtrfReporterOptions,
     'outputDir' | 'outputFile' | 'logLevel' | 'captureLogs' |
-    'includeHooks' | 'includeRetries' | 'markFlaky' | 'tags' | 'testType' | 'metadata'
+    'includeHooks' | 'includeRetries' | 'markFlaky' | 'tags' | 'testType' | 'metadata' | 
+    'structureByHooks' | 'captureGlobalHookLogs'
   >> & Pick<CtrfReporterOptions, 'environment' | 'transformTest' | 'onComplete'>;
 
   private report: CtrfReport;
@@ -61,6 +65,7 @@ export default class CtrfReporter extends WDIOReporter {
   private runnerStartTime = 0;
   private runnerEndTime = 0;
   private globalAttachments: CtrfAttachment[] = [];
+  private currentGlobalHookBeingProcessed: CtrfHook | null = null;
 
   constructor(options: CtrfReporterOptions) {
     super(options);
@@ -75,6 +80,8 @@ export default class CtrfReporter extends WDIOReporter {
       tags: options.tags ?? [],
       testType: options.testType ?? 'e2e',
       metadata: options.metadata ?? {},
+      structureByHooks: options.structureByHooks ?? true,
+      captureGlobalHookLogs: options.captureGlobalHookLogs ?? (options.structureByHooks ?? true),
       environment: options.environment ?? {},
       transformTest: options.transformTest,
       onComplete: options.onComplete,
@@ -110,7 +117,11 @@ export default class CtrfReporter extends WDIOReporter {
 
   onSuiteStart(suite: SuiteStats): void {
     this.currentSuite = suite.title;
-    const state: InternalSuiteState = { hooks: [] };
+    const state: InternalSuiteState = { 
+      hooks: [],
+      globalHooks: [],
+      globalHookLogs: [],
+    };
     this.suiteMap.set(suite.uid, state);
     this.suiteMap.set(suite.title, state);
     this.suiteCount += 1;
@@ -234,8 +245,23 @@ export default class CtrfReporter extends WDIOReporter {
       start: Date.now(),
       stop: Date.now(),
     };
+    
     const suiteState = this.suiteMap.get(hook.parent) ?? this.suiteMap.get(this.currentSuite);
-    if (suiteState) suiteState.hooks.push(hookData);
+    if (suiteState) {
+      // Classify hook as global (before/after all) or test-level (beforeEach/afterEach)
+      if (hookData.type === 'before' || hookData.type === 'after') {
+        suiteState.globalHooks.push(hookData);
+        this.currentGlobalHookBeingProcessed = hookData; // Track for log capture
+        
+        // Track active global hook for log capture
+        if (this.opts.captureGlobalHookLogs) {
+          shared.setActiveGlobalHook(this.currentSuite, hookData.title);
+        }
+      } else {
+        suiteState.hooks.push(hookData);
+      }
+    }
+    
     (hook as unknown as Record<string, unknown>)._ctrfHook = hookData;
   }
 
@@ -254,6 +280,19 @@ export default class CtrfReporter extends WDIOReporter {
           level: 'error',
           message: hook.error.message,
         }];
+      }
+      
+      // Capture logs from global hook if applicable
+      if (this.opts.captureGlobalHookLogs && (ctrfHook.type === 'before' || ctrfHook.type === 'after')) {
+        const clearResult = shared.clearActiveGlobalHook();
+        if (clearResult && clearResult.logs.length > 0 && ctrfHook.logs === undefined) {
+          ctrfHook.logs = clearResult.logs;
+        }
+      }
+      
+      // Clear the current global hook reference after processing
+      if (this.currentGlobalHookBeingProcessed === ctrfHook) {
+        this.currentGlobalHookBeingProcessed = null;
       }
     }
   }
@@ -331,8 +370,17 @@ export default class CtrfReporter extends WDIOReporter {
 
     if (this.opts.includeHooks) {
       const suiteHooks = this.suiteMap.get(test.parent) ?? this.suiteMap.get(this.currentSuite);
-      const resolvedSuiteHooks = suiteHooks?.hooks ?? [];
-      state.ctrfTest.hooks = [...resolvedSuiteHooks, ...state.hooks];
+      
+      if (this.opts.structureByHooks) {
+        // Only include beforeEach/afterEach hooks in tests, not global before/after hooks
+        const testLevelHooks = (suiteHooks?.hooks ?? []).filter(h => h.type === 'beforeEach' || h.type === 'afterEach');
+        state.ctrfTest.hooks = [...testLevelHooks, ...state.hooks];
+      } else {
+        // Include all hooks (backwards compatible)
+        const resolvedSuiteHooks = suiteHooks?.hooks ?? [];
+        const allGlobalHooks = suiteHooks?.globalHooks ?? [];
+        state.ctrfTest.hooks = [...allGlobalHooks, ...resolvedSuiteHooks, ...state.hooks];
+      }
     }
   }
 
@@ -392,8 +440,74 @@ export default class CtrfReporter extends WDIOReporter {
       suites: this.suiteCount,
       flaky,
     };
+    
+    // Build hierarchical structure if structureByHooks is enabled
+    if (this.opts.structureByHooks) {
+      this.report.suite = this.buildSuiteHierarchy(tests);
+    }
+    
     this.report.tests = tests;
     this.report.attachments = this.globalAttachments.length > 0 ? this.globalAttachments : undefined;
+  }
+
+  private buildSuiteHierarchy(tests: CtrfTest[]): CtrfSuite[] {
+    // Group tests by suite and filepath
+    const suiteHierarchyMap = new Map<string, { suite: CtrfSuite; tests: CtrfTest[] }>();
+    
+    for (const test of tests) {
+      const suite = test.suite ?? 'default';
+      const filepath = test.filepath ?? 'unknown';
+      const key = `${filepath}::${suite}`;
+      
+      if (!suiteHierarchyMap.has(key)) {
+        const suiteState = this.suiteMap.get(suite);
+        const ctrfSuite: CtrfSuite = {
+          name: suite,
+          filepath,
+          tests: [],
+        };
+        
+        // Add global hooks if present
+        if (this.opts.includeHooks && suiteState && suiteState.globalHooks.length > 0) {
+          ctrfSuite.globalHooks = suiteState.globalHooks;
+        }
+        
+        // Add logs from global hooks if capturing is enabled
+        if (this.opts.captureGlobalHookLogs && suiteState && suiteState.globalHookLogs.length > 0) {
+          ctrfSuite.logs = suiteState.globalHookLogs;
+        }
+        
+        // Also add logs from global hooks themselves if they have logs
+        if (this.opts.captureGlobalHookLogs && ctrfSuite.globalHooks) {
+          const hookLogs: CtrfLogEntry[] = [];
+          for (const hook of ctrfSuite.globalHooks) {
+            if (hook.logs && hook.logs.length > 0) {
+              hookLogs.push(...hook.logs);
+            }
+          }
+          if (hookLogs.length > 0) {
+            if (!ctrfSuite.logs) {
+              ctrfSuite.logs = [];
+            }
+            // Merge and sort by timestamp
+            ctrfSuite.logs = [...ctrfSuite.logs, ...hookLogs].sort((a, b) => a.timestamp - b.timestamp);
+          }
+        }
+        
+        suiteHierarchyMap.set(key, { suite: ctrfSuite, tests: [] });
+      }
+      
+      suiteHierarchyMap.get(key)!.tests.push(test);
+    }
+    
+    // Convert to array with tests assigned
+    const suites: CtrfSuite[] = [];
+    for (const { suite, tests: suiteTests } of suiteHierarchyMap.values()) {
+      suite.tests = suiteTests;
+      suites.push(suite);
+    }
+    
+    return suites;
   }
 
   private writeReport(): void {

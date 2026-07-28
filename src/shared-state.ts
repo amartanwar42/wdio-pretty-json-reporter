@@ -13,11 +13,23 @@ interface PendingTestState {
   logs: CtrfLogEntry[];
 }
 
+interface ActiveGlobalHookState {
+  suite: string;
+  hookTitle: string;
+  logs: CtrfLogEntry[];
+}
+
 /** Active test being executed */
 let activeTest: PendingTestState | null = null;
 
+/** Active global hook being executed (before all / after all) */
+let activeGlobalHook: ActiveGlobalHookState | null = null;
+
 /** All attachments/logs keyed by suite::test for reporter pickup */
 const archive = new Map<string, { attachments: CtrfAttachment[]; logs: CtrfLogEntry[] }>();
+
+/** Global hook logs keyed by suite::hookTitle for reporter pickup */
+const globalHookLogs = new Map<string, CtrfLogEntry[]>();
 
 export function setActiveTest(suite: string, test: string): void {
   activeTest = { suite, test, attachments: [], logs: [] };
@@ -37,6 +49,24 @@ export function getActiveTest(): PendingTestState | null {
   return activeTest;
 }
 
+export function setActiveGlobalHook(suite: string, hookTitle: string): void {
+  activeGlobalHook = { suite, hookTitle, logs: [] };
+}
+
+export function clearActiveGlobalHook(): { suite: string; hookTitle: string; logs: CtrfLogEntry[] } | null {
+  const copy = activeGlobalHook;
+  if (copy && copy.logs.length > 0) {
+    const key = `${copy.suite}::${copy.hookTitle}`;
+    globalHookLogs.set(key, copy.logs);
+  }
+  activeGlobalHook = null;
+  return copy;
+}
+
+export function getActiveGlobalHook(): ActiveGlobalHookState | null {
+  return activeGlobalHook;
+}
+
 export function addAttachment(att: CtrfAttachment): void {
   if (activeTest) {
     activeTest.attachments.push(att);
@@ -44,17 +74,19 @@ export function addAttachment(att: CtrfAttachment): void {
 }
 
 export function addLog(level: string, message: string): void {
+  const now = Date.now();
+  const logEntry: CtrfLogEntry = {
+    timestamp: now,
+    level: normalizeLoglevel(level),
+    message,
+  };
+  
   if (activeTest) {
-    const normalized = level.toLowerCase();
-    const safeLevel: CtrfLogEntry['level'] =
-      normalized === 'trace' || normalized === 'debug' || normalized === 'info' || normalized === 'warn' || normalized === 'error'
-        ? normalized
-        : 'info';
-    activeTest.logs.push({
-      timestamp: Date.now(),
-      level: safeLevel,
-      message,
-    });
+    activeTest.logs.push(logEntry);
+  }
+  
+  if (activeGlobalHook) {
+    activeGlobalHook.logs.push(logEntry);
   }
 }
 
@@ -65,7 +97,24 @@ export function pullTestData(suite: string, test: string): { attachments: CtrfAt
   return data;
 }
 
+export function pullGlobalHookLogs(suite: string, hookTitle: string): CtrfLogEntry[] {
+  const key = `${suite}::${hookTitle}`;
+  const logs = globalHookLogs.get(key) ?? [];
+  globalHookLogs.delete(key);
+  return logs;
+}
+
 export function clearAll(): void {
   activeTest = null;
+  activeGlobalHook = null;
   archive.clear();
+  globalHookLogs.clear();
+}
+
+function normalizeLoglevel(level: string): CtrfLogEntry['level'] {
+  const normalized = level.toLowerCase();
+  if (normalized === 'trace' || normalized === 'debug' || normalized === 'info' || normalized === 'warn' || normalized === 'error') {
+    return normalized;
+  }
+  return 'info';
 }

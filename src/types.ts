@@ -128,11 +128,25 @@ export interface CtrfEnvironment {
   [key: string]: unknown;
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Suite (hierarchical structure with global hooks)
+// ═════════════════════════════════════════════════════════════════════════════
+
+export interface CtrfSuite {
+  name: string;
+  filepath?: string;
+  globalHooks?: CtrfHook[]; // before all / after all hooks
+  hooks?: CtrfHook[]; // beforeEach / afterEach hooks (can be at suite level)
+  logs?: CtrfLogEntry[]; // logs from global hooks
+  tests: CtrfTest[];
+}
+
 export interface CtrfReport {
   version: string;
   tool: CtrfTool;
   summary: CtrfSummary;
   tests: CtrfTest[];
+  suite?: CtrfSuite[]; // hierarchical structure (when structureByHooks is true)
   environment?: CtrfEnvironment;
   attachments?: CtrfAttachment[];
   logs?: CtrfLogEntry[];
@@ -204,6 +218,10 @@ export interface CtrfReporterOptions {
   transformTest?: (test: CtrfTest) => CtrfTest | null;
   /** Callback after report is written */
   onComplete?: (report: CtrfReport, outputPath: string) => void | Promise<void>;
+  /** Structure report by suites with global hooks outside tests (default: false) */
+  structureByHooks?: boolean;
+  /** Capture logs from global (before/after all) hooks (default: true when structureByHooks is true) */
+  captureGlobalHookLogs?: boolean;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
