@@ -47,7 +47,7 @@
     "attachment",
     "screenshot"
   ],
-  "author": "",
+  "author": "amar <amartanwar42@gmail.com>",
   "license": "MIT",
   "peerDependencies": {
     "@wdio/reporter": ">=8.0.0",

@@ -2,42 +2,47 @@
 
 > A **CTRF (Common Test Report Format)** JSON reporter for **WebdriverIO + Appium + Mocha + TypeScript** with auto-capture service and programmatic attachment API.
 
-## Architecture
+## Why Better Than Other JSON Reporters?
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  Your Test Code                                               │
-│  ├─ import { ctrf } from 'wdio-pretty-json-reporter'          │
-│  ├─ ctrf.attach.screenshot('./path.png')                      │
-│  └─ ctrf.log.info('custom message')                         │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│  CtrfService (auto-capture)                                 │
-│  ├─ Auto-screenshot on failure                              │
-│  ├─ Auto-page-source on failure                             │
-│  ├─ Auto-attach log files                                   │
-│  └─ Exposes browser.ctrf.* API                              │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│  Shared State (in-process)                                  │
-│  ├─ Active test tracking                                    │
-│  ├─ Attachment queue                                        │
-│  └─ Log buffer                                              │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│  CtrfReporter (observes + writes)                           │
-│  ├─ Test lifecycle hooks                                    │
-│  ├─ Hook tracking                                           │
-│  ├─ Retry history                                           │
-│  ├─ Flaky detection                                         │
-│  └─ Writes ./ctrf/wdio-ctrf-report.json                     │
-└─────────────────────────────────────────────────────────────┘
+**wdio-pretty-json-reporter** stands out from standard WebdriverIO reporters because:
+
+- **CTRF Standard**: Outputs standardized CTRF format, making your test data portable and tool-agnostic
+- **Auto-Capture Service**: Automatically captures screenshots, page source, and logs on failures—no manual code needed
+- **Retry & Flaky Detection**: Tracks test retry history and automatically marks flaky tests for analysis
+- **Programmatic API**: Full control via `ctrf.attach.*()` and `ctrf.log.*()` from your test code
+- **Hook Tracking**: Captures `before`/`after`/`beforeEach`/`afterEach` lifecycle events with timing
+- **File Attachments**: Easily embed screenshots, JSON, HTML, and arbitrary files in the report
+- **Zero-Config Defaults**: Works out-of-the-box with sensible defaults; only customize what you need
+
+---
+
+## Easy Frontend Integration
+
+The generated **CTRF JSON report** is frontend-friendly and integrates seamlessly with dashboards and test portals:
+
+- **Structured Data**: Every test, hook, retry, and attachment is organized in a parseable JSON hierarchy
+- **Embedded Artifacts**: Screenshots and HTML are encoded in the report—no external file fetching needed
+- **Rich Metadata**: Custom tags, environment info, and timestamps make filtering and correlation simple
+- **FE-Ready Format**: No transformation needed—parse the JSON directly in your React, Vue, or Angular dashboard
+- **Programmatic Access**: Loop through test results, render timelines, display artifacts, and build live dashboards
+- **Scalable**: Handles large test suites and thousands of attachments without performance impact
+
+### Example FE Usage
+
+```typescript
+// Read the CTRF report in your frontend app
+const response = await fetch('/api/ctrf-reports/latest');
+const report = await response.json();
+
+// Render test results
+report.tests.forEach(test => {
+  console.log(`${test.name}: ${test.status}`);
+  test.attachments?.forEach(att => {
+    if (att.type === 'screenshot') {
+      document.body.innerHTML += `<img src="data:${att.mediaType};base64,${att.data}" />`;
+    }
+  });
+});
 ```
 
 ---
