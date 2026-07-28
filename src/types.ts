@@ -137,7 +137,6 @@ export interface CtrfSuite {
   filepath?: string;
   globalHooks?: CtrfHook[]; // before all / after all hooks
   hooks?: CtrfHook[]; // beforeEach / afterEach hooks (can be at suite level)
-  logs?: CtrfLogEntry[]; // logs from global hooks
   tests: CtrfTest[];
 }
 
@@ -145,7 +144,7 @@ export interface CtrfReport {
   version: string;
   tool: CtrfTool;
   summary: CtrfSummary;
-  tests: CtrfTest[];
+  tests?: CtrfTest[];
   suite?: CtrfSuite[]; // hierarchical structure (when structureByHooks is true)
   environment?: CtrfEnvironment;
   attachments?: CtrfAttachment[];

@@ -445,9 +445,10 @@ export default class CtrfReporter extends WDIOReporter {
     // Build hierarchical structure if structureByHooks is enabled
     if (this.opts.structureByHooks) {
       this.report.suite = this.buildSuiteHierarchy(tests);
+    } else {
+      this.report.tests = tests;
     }
     
-    this.report.tests = tests;
     this.report.attachments = this.globalAttachments.length > 0 ? this.globalAttachments : undefined;
   }
 
@@ -471,28 +472,6 @@ export default class CtrfReporter extends WDIOReporter {
         // Add global hooks if present
         if (this.opts.includeHooks && suiteState && suiteState.globalHooks.length > 0) {
           ctrfSuite.globalHooks = suiteState.globalHooks;
-        }
-        
-        // Add logs from global hooks if capturing is enabled
-        if (this.opts.captureGlobalHookLogs && suiteState && suiteState.globalHookLogs.length > 0) {
-          ctrfSuite.logs = suiteState.globalHookLogs;
-        }
-        
-        // Also add logs from global hooks themselves if they have logs
-        if (this.opts.captureGlobalHookLogs && ctrfSuite.globalHooks) {
-          const hookLogs: CtrfLogEntry[] = [];
-          for (const hook of ctrfSuite.globalHooks) {
-            if (hook.logs && hook.logs.length > 0) {
-              hookLogs.push(...hook.logs);
-            }
-          }
-          if (hookLogs.length > 0) {
-            if (!ctrfSuite.logs) {
-              ctrfSuite.logs = [];
-            }
-            // Merge and sort by timestamp
-            ctrfSuite.logs = [...ctrfSuite.logs, ...hookLogs].sort((a, b) => a.timestamp - b.timestamp);
-          }
         }
         
         suiteHierarchyMap.set(key, { suite: ctrfSuite, tests: [] });
