@@ -1,6 +1,6 @@
 {
   "name": "wdio-pretty-json-reporter",
-  "version": "1.0.17",
+  "version": "1.0.18",
   "description": "CTRF JSON reporter for WebdriverIO with auto-capture service, hooks, retries, and attachments.",
   "repository": {
     "type": "git",
