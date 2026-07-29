@@ -182,8 +182,8 @@ The uploader pushes the merged JSON report plus screenshots and other copied ass
 | `REPORTS_S3_INDEX_KEY` | No | `${REPORTS_S3_PREFIX}/reports-index.json` | S3 key for the reports index |
 | `REPORTS_S3_UPDATE_INDEX` | No | `true` | Set to `false` to skip index updates |
 | `REPORTS_PROJECT` | No | `REPORTS_S3_PREFIX` | Project name stored in the index |
-| `REPORTS_PLATFORM` | No | `PLATFORM` or `unknown` | Platform metadata stored in the index |
-| `REPORTS_DEVICE` | No | `DEVICE` or `unknown` | Device metadata stored in the index |
+| `REPORTS_PLATFORM` | No | `mobile` | Platform/category metadata stored in the index |
+| `REPORTS_DEVICE` | No | `DEVICE`, `PLATFORM`, or `unknown` | Device metadata stored in the index, for example `android` or `ios` |
 | `REPORTS_BRANCH` | No | CI branch or `local` | Branch metadata stored in the index |
 | `REPORTS_BUILD_NUMBER` | No | CI build number or `local` | Build metadata stored in the index |
 | `REPORTS_S3_JSON_NAMES` | No | `report.json,wdio-ctrf-report.json,wdio-report.json` | Preferred JSON report filenames for index `jsonPath` |
