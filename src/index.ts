@@ -4,3 +4,5 @@ export { default as CtrfService } from './service';
 export * from './types';
 export type { CtrfReporterOptions } from './reporter';
 export { ctrf, attach, log, captureScreenshot } from './api';
+export { uploadWdioPrettyJsonToS3 } from './s3-uploader';
+export type { UploadWdioPrettyJsonToS3Options } from './s3-uploader';

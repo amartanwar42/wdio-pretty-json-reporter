@@ -1,6 +1,6 @@
 # wdio-pretty-json-reporter
 
-> A **CTRF (Common Test Report Format)** JSON reporter for **WebdriverIO + Appium + Mocha + TypeScript** with auto-capture service and programmatic attachment API.
+> A JSON reporter for **WebdriverIO + Appium + Mocha + TypeScript** that generates CTRF-standard reports, with an auto-capture service and a programmatic attachment API.
 
 ## Why Better Than Other JSON Reporters?
 
@@ -27,23 +27,6 @@ The generated **CTRF JSON report** is frontend-friendly and integrates seamlessl
 - **Programmatic Access**: Loop through test results, render timelines, display artifacts, and build live dashboards
 - **Scalable**: Handles large test suites and thousands of attachments without performance impact
 
-### Example FE Usage
-
-```typescript
-// Read the CTRF report in your frontend app
-const response = await fetch('/api/ctrf-reports/latest');
-const report = await response.json();
-
-// Render test results
-report.tests.forEach(test => {
-  console.log(`${test.name}: ${test.status}`);
-  test.attachments?.forEach(att => {
-    if (att.type === 'screenshot') {
-      document.body.innerHTML += `<img src="data:${att.mediaType};base64,${att.data}" />`;
-    }
-  });
-});
-```
 
 ---
 
@@ -65,47 +48,32 @@ npm install --save-dev @wdio/reporter @wdio/types
 ### 1. Configure `wdio.conf.ts`
 
 ```typescript
-import type { Options } from '@wdio/types';
-import CtrfReporter from 'wdio-pretty-json-reporter';
+import wdioJSONReporter from 'wdio-pretty-json-reporter'
+import wdioJSONService from 'wdio-pretty-json-reporter/service'
 
 export const config: Options.Testrunner = {
   // ... other config
 
   reporters: [
     'spec',
-    [CtrfReporter, {
-      outputDir: './ctrf',
-      captureLogs: true,
-    }],
+    [
+        wdioJSONReporter,
+			{
+				outputDir: './wdio-pretty-json',
+			},
+     ],
   ],
+
+  services: [
+		[
+			wdioJSONService,
+			{
+				screenshot: { enabled: true, path: './wdio-pretty-json/screenshots', onFailureOnly: true },
+				attachLogs: ['./appium.log'],
+			},
+		],
+	]
 };
-```
-
-Hook inclusion, retry history, flaky marking, and hierarchical suite grouping are always enabled.
-
-Important: do not use `'wdio-pretty-json-reporter'` as a reporter string. WDIO will try to resolve it as `wdio-wdio-pretty-json-reporter-reporter`.
-
-If you prefer string registration, use `'ctrf'`:
-
-```typescript
-reporters: ['spec', ['ctrf', { outputDir: './ctrf' }]]
-```
-
-If you use CommonJS config, register the class directly:
-
-```js
-reporters: [
-  'spec',
-  [require('wdio-pretty-json-reporter').default, {
-    outputDir: './ctrf',
-  }],
-],
-
-services: [
-  [require('wdio-pretty-json-reporter/service').default, {
-    screenshot: { enabled: true, onFailureOnly: true },
-  }],
-]
 ```
 
 ### 2. Run tests
@@ -154,6 +122,58 @@ cat ./ctrf/wdio-ctrf-report.json | jq '.summary'
 | `attachLogs` | `string[]` | `[]` | Log file paths to attach after each test |
 | `appiumLogPath` | `string` | — | Appium server log to attach |
 | `networkHarPath` | `string` | — | Network HAR file to attach |
+
+---
+
+## Upload Reports to S3
+
+The package includes a generic S3 uploader for the generated report folder. It uploads every file in the report directory, preserves nested assets such as screenshots, and can maintain a `reports-index.json` for dashboards.
+
+Set the below variables in .env
+```bash
+REPORTS_S3_BUCKET=my-report-bucket \
+REPORTS_S3_PREFIX=my-project \
+REPORTS_DIR=./wdio-pretty-json \
+npx wdio-pretty-json-upload-s3
+```
+
+You can also pass the report folder as the first CLI argument:
+
+```bash
+npx wdio-pretty-json-upload-s3
+```
+
+### S3 Upload Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `REPORTS_S3_BUCKET` | Yes | — | Target S3 bucket |
+| `REPORTS_DIR` | No | `./wdio-pretty-json` | Local report directory to upload |
+| `REPORTS_S3_PREFIX` | No | `wdio-pretty-json` | S3 prefix/project folder for uploaded runs |
+| `REPORTS_RUN_ID` | No | CI run id or timestamp | Run folder name under the prefix |
+| `REPORTS_S3_INDEX_KEY` | No | `${REPORTS_S3_PREFIX}/reports-index.json` | S3 key for the reports index |
+| `REPORTS_S3_UPDATE_INDEX` | No | `true` | Set to `false` to skip index updates |
+| `REPORTS_PROJECT` | No | `wdio-pretty-json` | Project name stored in the index |
+| `REPORTS_PLATFORM` | No | `PLATFORM` or `unknown` | Platform metadata stored in the index |
+| `REPORTS_DEVICE` | No | `DEVICE` or `unknown` | Device metadata stored in the index |
+| `REPORTS_BRANCH` | No | CI branch or `local` | Branch metadata stored in the index |
+| `REPORTS_BUILD_NUMBER` | No | CI build number or `local` | Build metadata stored in the index |
+| `REPORTS_S3_JSON_NAMES` | No | `report.json,wdio-ctrf-report.json,wdio-report.json` | Preferred JSON report filenames for index `jsonPath` |
+| `REPORTS_METADATA_JSON` | No | — | Extra index metadata as a JSON object |
+| `AWS_REGION` | No | `us-east-1` | AWS region |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | No | AWS SDK default chain | AWS credentials; IAM role/default profile also work |
+
+Programmatic use is available too:
+
+```typescript
+import { uploadWdioPrettyJsonToS3 } from 'wdio-pretty-json-reporter/s3-uploader';
+
+await uploadWdioPrettyJsonToS3({
+  bucket: 'my-report-bucket',
+  prefix: 'my-project',
+  reportsDir: './wdio-pretty-json',
+});
+```
 
 ---
 
@@ -304,25 +324,14 @@ browser.ctrf.log.info('message');
 
 ---
 
-## TypeScript Types
-
-```typescript
-import type {
-  CtrfReport, CtrfTest, CtrfHook, CtrfRetry,
-  CtrfAttachment, CtrfEnvironment, CtrfSummary
-} from 'wdio-pretty-json-reporter';
-```
-
----
-
 ## Open Source & Contributing
 
 This project is **open source** and licensed under the **MIT License**.
 
 - 📖 **License**: [MIT](LICENSE) — Free to use, modify, and distribute
-- 🐛 **Report Issues**: [GitHub Issues](https://github.com/hellobetter/wdio-pretty-json-reporter/issues)
+- 🐛 **Report Issues**: [GitHub Issues](https://github.com/amartanwar42/wdio-pretty-json-reporter/issues)
 - 🤝 **Contribute**: Contributions are welcome! Fork the repo and submit a PR
-- ⭐ **Star Us**: Show your support by starring the [repository](https://github.com/hellobetter/wdio-pretty-json-reporter)
+- ⭐ **Star Us**: Show your support by starring the [repository](https://github.com/amartanwar42/wdio-pretty-json-reporter)
 
 ### Contributing
 

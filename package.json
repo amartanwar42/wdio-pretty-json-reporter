@@ -4,14 +4,17 @@
   "description": "CTRF JSON reporter for WebdriverIO with auto-capture service, hooks, retries, and attachments.",
   "repository": {
     "type": "git",
-    "url": "https://github.com/hellobetter/wdio-pretty-json-reporter"
+    "url": "https://github.com/amartanwar42/wdio-pretty-json-reporter"
   },
-  "homepage": "https://github.com/hellobetter/wdio-pretty-json-reporter#readme",
+  "homepage": "https://github.com/amartanwar42/wdio-pretty-json-reporter#readme",
   "bugs": {
-    "url": "https://github.com/hellobetter/wdio-pretty-json-reporter/issues"
+    "url": "https://github.com/amartanwar42/wdio-pretty-json-reporter/issues"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "wdio-pretty-json-upload-s3": "dist/s3-uploader.js"
+  },
   "exports": {
     ".": {
       "import": "./dist/index.js",
@@ -27,6 +30,11 @@
       "import": "./dist/service.js",
       "require": "./dist/service.js",
       "types": "./dist/service.d.ts"
+    },
+    "./s3-uploader": {
+      "import": "./dist/s3-uploader.js",
+      "require": "./dist/s3-uploader.js",
+      "types": "./dist/s3-uploader.d.ts"
     }
   },
   "files": [
@@ -38,6 +46,7 @@
     "build:watch": "tsc --watch",
     "lint": "eslint src/**/*.ts",
     "test": "jest",
+    "upload:s3": "node dist/s3-uploader.js",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -60,6 +69,9 @@
   "peerDependencies": {
     "@wdio/reporter": ">=8.0.0",
     "@wdio/types": ">=8.0.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.750.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
