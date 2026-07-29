@@ -17,6 +17,22 @@ declare const browser: BrowserWithWdioCommands;
 const DEFAULT_SCREENSHOT_PATH = './screenshots';
 const DEFAULT_VIDEO_PATH = './videos';
 
+/**
+ * Classify a hook name/title to its type. Mirrors the reporter's classifier so
+ * both sides agree on the type used to link service-recorded hook failures to
+ * the reporter's hooks, regardless of title-string differences.
+ */
+function classifyHookType(name: string): shared.HookType {
+  const lower = name.toLowerCase();
+  if (lower.includes('before each') || lower.includes('beforeeach')) return 'beforeEach';
+  if (lower.includes('after each') || lower.includes('aftereach')) return 'afterEach';
+  if (lower.includes('before all') || lower.includes('beforeall')) return 'before';
+  if (lower.includes('after all') || lower.includes('afterall')) return 'after';
+  if (lower.includes('before')) return 'before';
+  if (lower.includes('after')) return 'after';
+  return 'unknown';
+}
+
 type ResolvedCtrfServiceOptions = {
   screenshot: Required<NonNullable<CtrfServiceOptions['screenshot']>>;
   pageSource: Required<NonNullable<CtrfServiceOptions['pageSource']>>;
@@ -90,25 +106,28 @@ export default class CtrfService implements Services.ServiceInstance {
   }
 
   async afterHook(
-    hook: { title?: string; parent?: string },
+    test: { title?: string; parent?: string },
     _context: unknown,
-    result: { passed: boolean; error?: Error }
+    result: { passed: boolean; error?: Error },
+    hookName?: string
   ): Promise<void> {
     // Capture failure context when a hook (e.g. `before all`) fails. The
     // service is the source of truth for hook pass/fail because the reporter's
-    // HookStats often lacks the error. Results are keyed by hook title and
-    // applied to the report by the reporter at build time.
+    // HookStats often lacks the error. WDIO's `afterHook` signature is
+    // `(test, context, result, hookName)` — the first arg is the associated
+    // test, NOT the hook, so we classify by hook TYPE (derived from hookName /
+    // test title) and let the reporter match by type at build time.
     if (result?.passed !== false) return;
 
-    const title = hook?.title ?? 'hook';
-    shared.recordHookFailure(title, result.error);
+    const type = classifyHookType(hookName ?? test?.title ?? '');
+    shared.recordHookFailure(type, result.error);
 
     if (this.opts.screenshot.enabled) {
       const fileName = `hook_failure_${Date.now()}.png`;
       const screenshotPath = path.resolve(this.opts.screenshot.path, fileName);
       try {
         await browser.saveScreenshot(screenshotPath);
-        shared.addHookAttachment(title, {
+        shared.addHookAttachment(type, {
           name: fileName.replace(/\.png$/, ''),
           path: screenshotPath,
           type: 'image/png',
@@ -123,7 +142,7 @@ export default class CtrfService implements Services.ServiceInstance {
     if (this.opts.pageSource.enabled) {
       try {
         const source = await browser.getPageSource();
-        shared.addHookAttachment(title, {
+        shared.addHookAttachment(type, {
           name: 'page-source.html',
           content: source,
           type: 'text/html',

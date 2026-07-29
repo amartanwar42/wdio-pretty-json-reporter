@@ -537,7 +537,7 @@ export default class CtrfReporter extends WDIOReporter {
         // Add global hooks if present
         if (this.opts.includeHooks && suiteState && suiteState.globalHooks.length > 0) {
           for (const globalHook of suiteState.globalHooks) {
-            const hookResult = shared.getHookResult(globalHook.title);
+            const hookResult = shared.takeHookResult(globalHook.type ?? 'unknown');
             if (!hookResult) continue;
             if (hookResult.failed) {
               globalHook.status = 'failed';

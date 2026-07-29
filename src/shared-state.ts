@@ -35,6 +35,8 @@ const globalHookLogs = new Map<string, CtrfLogEntry[]>();
 /** Global hook attachments keyed by suite::hookTitle for reporter pickup */
 const globalHookAttachments = new Map<string, CtrfAttachment[]>();
 
+export type HookType = 'before' | 'after' | 'beforeEach' | 'afterEach' | 'unknown';
+
 interface HookResult {
   failed: boolean;
   message?: string;
@@ -42,9 +44,14 @@ interface HookResult {
   attachments: CtrfAttachment[];
 }
 
-/** Hook results recorded by the service (source of truth for hook pass/fail),
- *  keyed by hook title. Applied by the reporter at report-build time. */
-const hookResults = new Map<string, HookResult>();
+/**
+ * Hook failures recorded by the service (source of truth for hook pass/fail).
+ * Keyed by hook TYPE rather than title: WDIO's service `afterHook` receives the
+ * associated test object, whose title never matches the reporter's HookStats
+ * title, so title-based matching is unreliable. Both sides classify a hook to
+ * the same type, so type-keyed FIFO queues link them robustly. Consumed by the
+ * reporter at report-build time via `takeHookResult`. */
+const hookResults = new Map<HookType, HookResult[]>();
 
 /** Session-level attachments (e.g. appium.log) not tied to any single test. */
 let globalAttachmentSink: CtrfAttachment[] = [];
@@ -138,24 +145,32 @@ export function pullGlobalHookAttachments(suite: string, hookTitle: string): Ctr
   return attachments;
 }
 
-export function recordHookFailure(hookTitle: string, error?: Error): void {
-  const existing = hookResults.get(hookTitle) ?? { failed: false, attachments: [] };
-  existing.failed = true;
+export function recordHookFailure(type: HookType, error?: Error): void {
+  const queue = hookResults.get(type) ?? [];
+  const result: HookResult = { failed: true, attachments: [] };
   if (error) {
-    existing.message = error.message;
-    existing.trace = error.stack;
+    result.message = error.message;
+    result.trace = error.stack;
   }
-  hookResults.set(hookTitle, existing);
+  queue.push(result);
+  hookResults.set(type, queue);
 }
 
-export function addHookAttachment(hookTitle: string, att: CtrfAttachment): void {
-  const existing = hookResults.get(hookTitle) ?? { failed: false, attachments: [] };
-  existing.attachments.push(att);
-  hookResults.set(hookTitle, existing);
+export function addHookAttachment(type: HookType, att: CtrfAttachment): void {
+  const queue = hookResults.get(type) ?? [];
+  // Attach to the most recently recorded failure of this type (same hook that
+  // is currently being processed by the service), creating one if needed.
+  const target = queue[queue.length - 1] ?? { failed: true, attachments: [] };
+  if (queue.length === 0) queue.push(target);
+  target.attachments.push(att);
+  hookResults.set(type, queue);
 }
 
-export function getHookResult(hookTitle: string): { failed: boolean; message?: string; trace?: string; attachments: CtrfAttachment[] } | undefined {
-  return hookResults.get(hookTitle);
+/** Shift (consume) the next recorded failure of the given hook type. */
+export function takeHookResult(type: HookType): { failed: boolean; message?: string; trace?: string; attachments: CtrfAttachment[] } | undefined {
+  const queue = hookResults.get(type);
+  if (!queue || queue.length === 0) return undefined;
+  return queue.shift();
 }
 
 export function addGlobalAttachment(att: CtrfAttachment): void {
