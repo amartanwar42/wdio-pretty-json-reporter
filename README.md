@@ -181,7 +181,7 @@ The uploader pushes the merged JSON report plus screenshots and other copied ass
 | `REPORTS_RUN_ID` | No | CI run id or timestamp | Run folder name under the prefix |
 | `REPORTS_S3_INDEX_KEY` | No | `${REPORTS_S3_PREFIX}/reports-index.json` | S3 key for the reports index |
 | `REPORTS_S3_UPDATE_INDEX` | No | `true` | Set to `false` to skip index updates |
-| `REPORTS_PROJECT` | No | `wdio-pretty-json` | Project name stored in the index |
+| `REPORTS_PROJECT` | No | `REPORTS_S3_PREFIX` | Project name stored in the index |
 | `REPORTS_PLATFORM` | No | `PLATFORM` or `unknown` | Platform metadata stored in the index |
 | `REPORTS_DEVICE` | No | `DEVICE` or `unknown` | Device metadata stored in the index |
 | `REPORTS_BRANCH` | No | CI branch or `local` | Branch metadata stored in the index |
@@ -194,8 +194,7 @@ The uploader pushes the merged JSON report plus screenshots and other copied ass
 Programmatic use is available too:
 
 ```typescript
-import { mergeWdioPrettyJsonReports } from 'wdio-pretty-json-reporter/merge-reports';
-import { uploadWdioPrettyJsonToS3 } from 'wdio-pretty-json-reporter/s3-uploader';
+import { mergeWdioPrettyJsonReports, uploadWdioPrettyJsonToS3 } from 'wdio-pretty-json-reporter';
 
 mergeWdioPrettyJsonReports({
   inputDir: './wdio-pretty-json',

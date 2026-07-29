@@ -213,10 +213,12 @@ const getOptionsFromEnv = (): Required<Omit<UploadWdioPrettyJsonToS3Options, 'me
 const mergeOptions = (options: UploadWdioPrettyJsonToS3Options = {}): Required<Omit<UploadWdioPrettyJsonToS3Options, 'metadata'>> & { metadata?: Record<string, string> } => {
   const fromEnv = getOptionsFromEnv();
   const prefix = options.prefix ?? fromEnv.prefix;
+  const project = options.project ?? env('REPORTS_PROJECT') ?? env('PROJECT_NAME') ?? prefix;
   return {
     ...fromEnv,
     ...options,
     prefix,
+    project,
     indexKey: options.indexKey ?? env('REPORTS_S3_INDEX_KEY') ?? `${prefix}/reports-index.json`,
     reportsDir: path.resolve(process.cwd(), options.reportsDir ?? fromEnv.reportsDir),
     metadata: options.metadata ?? fromEnv.metadata,
