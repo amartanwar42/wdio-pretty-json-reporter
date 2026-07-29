@@ -140,34 +140,41 @@ export default class CtrfReporter extends WDIOReporter {
       state.attemptLogs = [];
       state.attemptStartTime = now;
     } else {
-      const ctrfTest: CtrfTest = {
-        name: test.title,
-        status: 'other',
-        duration: 0,
-        start: now,
-        stop: now,
-        suite: this.currentSuite,
-        filepath: this.currentSpecFile,
-        tags: [...this.opts.tags],
-        type: this.opts.testType,
-        retries: 0,
-        flaky: false,
-        metadata: { ...this.opts.metadata },
-        ...this.extractDeviceInfo(),
-      };
-
-      this.testMap.set(key, {
-        ctrfTest,
-        logs: [],
-        hooks: [],
-        retries: [],
-        currentAttempt: 1,
-        attemptLogs: [],
-        attemptStartTime: now,
-      });
+      this.createTestState(test, now);
     }
 
     this.log('trace', `Test started: ${test.title} (attempt ${this.testMap.get(key)!.currentAttempt})`);
+  }
+
+  private createTestState(test: TestStats, now: number): InternalTestState {
+    const key = this.getTestKey(test);
+    const ctrfTest: CtrfTest = {
+      name: test.title,
+      status: 'other',
+      duration: 0,
+      start: now,
+      stop: now,
+      suite: this.currentSuite,
+      filepath: this.currentSpecFile,
+      tags: [...this.opts.tags],
+      type: this.opts.testType,
+      retries: 0,
+      flaky: false,
+      metadata: { ...this.opts.metadata },
+      ...this.extractDeviceInfo(),
+    };
+
+    const state: InternalTestState = {
+      ctrfTest,
+      logs: [],
+      hooks: [],
+      retries: [],
+      currentAttempt: 1,
+      attemptLogs: [],
+      attemptStartTime: now,
+    };
+    this.testMap.set(key, state);
+    return state;
   }
 
   onTestPass(test: TestStats): void {
@@ -345,8 +352,9 @@ export default class CtrfReporter extends WDIOReporter {
 
   private finalizeTest(test: TestStats, status: CtrfTest['status']): void {
     const key = this.getTestKey(test);
-    const state = this.testMap.get(key);
-    if (!state) return;
+    // Tests skipped via `it.skip` / `this.skip()` never fire onTestStart,
+    // so create their state here to ensure they appear in the report.
+    const state = this.testMap.get(key) ?? this.createTestState(test, Date.now());
 
     const now = Date.now();
     state.ctrfTest.status = status;
@@ -445,6 +453,7 @@ export default class CtrfReporter extends WDIOReporter {
     // Build hierarchical structure if structureByHooks is enabled
     if (this.opts.structureByHooks) {
       this.report.suite = this.buildSuiteHierarchy(tests);
+      delete this.report.tests;
     } else {
       this.report.tests = tests;
     }
