@@ -89,6 +89,27 @@ export default class CtrfService implements Services.ServiceInstance {
     shared.setActiveTest(test.parent, test.title);
   }
 
+  async afterHook(
+    _test: unknown,
+    _context: unknown,
+    result: { passed: boolean; error?: Error }
+  ): Promise<void> {
+    // Capture a screenshot when a hook (e.g. `before all`) fails, so the
+    // failure has visual context. The reporter routes this attachment to the
+    // active global hook via shared state.
+    if (result?.passed !== false) return;
+    if (!this.opts.screenshot.enabled) return;
+
+    const fileName = `hook_failure_${Date.now()}.png`;
+    const screenshotPath = path.resolve(this.opts.screenshot.path, fileName);
+    try {
+      await browser.saveScreenshot(screenshotPath);
+      attach.screenshot(screenshotPath, fileName.replace(/\.png$/, ''));
+    } catch (e) {
+      shared.addLog('warn', `Failed to capture hook screenshot: ${(e as Error).message}`);
+    }
+  }
+
   async afterTest(
     test: { parent: string; title: string },
     _context: unknown,

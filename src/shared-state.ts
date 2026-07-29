@@ -17,6 +17,7 @@ interface ActiveGlobalHookState {
   suite: string;
   hookTitle: string;
   logs: CtrfLogEntry[];
+  attachments: CtrfAttachment[];
 }
 
 /** Active test being executed */
@@ -30,6 +31,9 @@ const archive = new Map<string, { attachments: CtrfAttachment[]; logs: CtrfLogEn
 
 /** Global hook logs keyed by suite::hookTitle for reporter pickup */
 const globalHookLogs = new Map<string, CtrfLogEntry[]>();
+
+/** Global hook attachments keyed by suite::hookTitle for reporter pickup */
+const globalHookAttachments = new Map<string, CtrfAttachment[]>();
 
 export function setActiveTest(suite: string, test: string): void {
   activeTest = { suite, test, attachments: [], logs: [] };
@@ -50,14 +54,19 @@ export function getActiveTest(): PendingTestState | null {
 }
 
 export function setActiveGlobalHook(suite: string, hookTitle: string): void {
-  activeGlobalHook = { suite, hookTitle, logs: [] };
+  activeGlobalHook = { suite, hookTitle, logs: [], attachments: [] };
 }
 
-export function clearActiveGlobalHook(): { suite: string; hookTitle: string; logs: CtrfLogEntry[] } | null {
+export function clearActiveGlobalHook(): { suite: string; hookTitle: string; logs: CtrfLogEntry[]; attachments: CtrfAttachment[] } | null {
   const copy = activeGlobalHook;
-  if (copy && copy.logs.length > 0) {
+  if (copy) {
     const key = `${copy.suite}::${copy.hookTitle}`;
-    globalHookLogs.set(key, copy.logs);
+    if (copy.logs.length > 0) {
+      globalHookLogs.set(key, copy.logs);
+    }
+    if (copy.attachments.length > 0) {
+      globalHookAttachments.set(key, copy.attachments);
+    }
   }
   activeGlobalHook = null;
   return copy;
@@ -68,6 +77,10 @@ export function getActiveGlobalHook(): ActiveGlobalHookState | null {
 }
 
 export function addAttachment(att: CtrfAttachment): void {
+  if (activeGlobalHook) {
+    activeGlobalHook.attachments.push(att);
+    return;
+  }
   if (activeTest) {
     activeTest.attachments.push(att);
   }
@@ -104,11 +117,19 @@ export function pullGlobalHookLogs(suite: string, hookTitle: string): CtrfLogEnt
   return logs;
 }
 
+export function pullGlobalHookAttachments(suite: string, hookTitle: string): CtrfAttachment[] {
+  const key = `${suite}::${hookTitle}`;
+  const attachments = globalHookAttachments.get(key) ?? [];
+  globalHookAttachments.delete(key);
+  return attachments;
+}
+
 export function clearAll(): void {
   activeTest = null;
   activeGlobalHook = null;
   archive.clear();
   globalHookLogs.clear();
+  globalHookAttachments.clear();
 }
 
 function normalizeLoglevel(level: string): CtrfLogEntry['level'] {

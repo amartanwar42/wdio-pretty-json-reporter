@@ -67,6 +67,8 @@ export default class CtrfReporter extends WDIOReporter {
   private runnerEndTime = 0;
   private globalAttachments: CtrfAttachment[] = [];
   private currentGlobalHookBeingProcessed: CtrfHook | null = null;
+  private pendingBeforeEachHooks: CtrfHook[] = [];
+  private lastStartedTestState: InternalTestState | null = null;
 
   constructor(options: CtrfReporterOptions) {
     super(options);
@@ -143,7 +145,19 @@ export default class CtrfReporter extends WDIOReporter {
       this.createTestState(test, now);
     }
 
+    this.attachPendingHooks(this.testMap.get(key)!);
+
     this.log('trace', `Test started: ${test.title} (attempt ${this.testMap.get(key)!.currentAttempt})`);
+  }
+
+  /** Assigns the beforeEach hooks that ran immediately before this test and
+   *  marks it as the target for the afterEach hooks that follow. */
+  private attachPendingHooks(state: InternalTestState): void {
+    if (this.pendingBeforeEachHooks.length > 0) {
+      state.hooks.push(...this.pendingBeforeEachHooks);
+      this.pendingBeforeEachHooks = [];
+    }
+    this.lastStartedTestState = state;
   }
 
   private createTestState(test: TestStats, now: number): InternalTestState {
@@ -254,19 +268,18 @@ export default class CtrfReporter extends WDIOReporter {
       stop: Date.now(),
     };
     
-    const suiteState = this.suiteMap.get(hook.parent) ?? this.suiteMap.get(this.currentSuite);
-    if (suiteState) {
-      // Classify hook as global (before/after all) or test-level (beforeEach/afterEach)
-      if (hookData.type === 'before' || hookData.type === 'after') {
+    // Global (before/after all) hooks are tracked at the suite level.
+    // Test-level (beforeEach/afterEach) hooks are attributed to individual
+    // tests in onHookEnd to avoid accumulating across the whole suite.
+    if (hookData.type === 'before' || hookData.type === 'after') {
+      const suiteState = this.suiteMap.get(hook.parent) ?? this.suiteMap.get(this.currentSuite);
+      if (suiteState) {
         suiteState.globalHooks.push(hookData);
-        this.currentGlobalHookBeingProcessed = hookData; // Track for log capture
-        
-        // Track active global hook for log capture
-        if (this.opts.captureGlobalHookLogs) {
-          shared.setActiveGlobalHook(this.currentSuite, hookData.title);
-        }
-      } else {
-        suiteState.hooks.push(hookData);
+      }
+      this.currentGlobalHookBeingProcessed = hookData; // Track for log capture
+
+      if (this.opts.captureGlobalHookLogs) {
+        shared.setActiveGlobalHook(this.currentSuite, hookData.title);
       }
     }
     
@@ -279,22 +292,49 @@ export default class CtrfReporter extends WDIOReporter {
     if (ctrfHook) {
       ctrfHook.stop = Date.now();
       ctrfHook.duration = ctrfHook.stop - ctrfHook.start;
-      ctrfHook.status = hook.error ? 'failed' : 'passed';
-      if (hook.error) {
-        ctrfHook.message = hook.error.message;
-        ctrfHook.trace = hook.error.stack;
+
+      // WDIO surfaces hook failures inconsistently: sometimes via `error`,
+      // sometimes via an `errors[]` array, and sometimes only via `state`.
+      const hookRecord = hook as unknown as Record<string, unknown>;
+      const errorList = hookRecord.errors;
+      const hookError = hook.error
+        ?? (Array.isArray(errorList) && errorList.length > 0 ? (errorList[0] as Error) : undefined);
+      const hookFailed = Boolean(hookError) || hookRecord.state === 'failed';
+
+      ctrfHook.status = hookFailed ? 'failed' : 'passed';
+      if (hookError) {
+        ctrfHook.message = hookError.message;
+        ctrfHook.trace = hookError.stack;
         ctrfHook.logs = [{
           timestamp: ctrfHook.stop,
           level: 'error',
-          message: hook.error.message,
+          message: hookError.message,
         }];
       }
       
-      // Capture logs from global hook if applicable
+      // Capture logs + attachments (e.g. failure screenshots) from global hooks
       if (this.opts.captureGlobalHookLogs && (ctrfHook.type === 'before' || ctrfHook.type === 'after')) {
         const clearResult = shared.clearActiveGlobalHook();
-        if (clearResult && clearResult.logs.length > 0 && ctrfHook.logs === undefined) {
-          ctrfHook.logs = clearResult.logs;
+        if (clearResult) {
+          if (clearResult.logs.length > 0 && ctrfHook.logs === undefined) {
+            ctrfHook.logs = clearResult.logs;
+          }
+          if (clearResult.attachments.length > 0) {
+            const normalized = clearResult.attachments.map((att) =>
+              att.path && !path.isAbsolute(att.path) ? { ...att, path: path.resolve(att.path) } : att
+            );
+            ctrfHook.attachments = [...(ctrfHook.attachments ?? []), ...normalized];
+          }
+        }
+      } else if (ctrfHook.type === 'beforeEach') {
+        // Attribute to the next test that starts.
+        this.pendingBeforeEachHooks.push(ctrfHook);
+      } else if (ctrfHook.type === 'afterEach') {
+        // Attribute to the test that just ran.
+        if (this.lastStartedTestState) {
+          this.lastStartedTestState.hooks.push(ctrfHook);
+        } else {
+          this.pendingBeforeEachHooks.push(ctrfHook);
         }
       }
       
@@ -354,7 +394,11 @@ export default class CtrfReporter extends WDIOReporter {
     const key = this.getTestKey(test);
     // Tests skipped via `it.skip` / `this.skip()` never fire onTestStart,
     // so create their state here to ensure they appear in the report.
-    const state = this.testMap.get(key) ?? this.createTestState(test, Date.now());
+    let state = this.testMap.get(key);
+    if (!state) {
+      state = this.createTestState(test, Date.now());
+      this.attachPendingHooks(state);
+    }
 
     const now = Date.now();
     state.ctrfTest.status = status;
@@ -376,21 +420,6 @@ export default class CtrfReporter extends WDIOReporter {
     if (this.opts.includeRetries) {
       state.ctrfTest.retriesDetail = [...state.retries];
     }
-
-    if (this.opts.includeHooks) {
-      const suiteHooks = this.suiteMap.get(test.parent) ?? this.suiteMap.get(this.currentSuite);
-      
-      if (this.opts.structureByHooks) {
-        // Only include beforeEach/afterEach hooks in tests, not global before/after hooks
-        const testLevelHooks = (suiteHooks?.hooks ?? []).filter(h => h.type === 'beforeEach' || h.type === 'afterEach');
-        state.ctrfTest.hooks = [...testLevelHooks, ...state.hooks];
-      } else {
-        // Include all hooks (backwards compatible)
-        const resolvedSuiteHooks = suiteHooks?.hooks ?? [];
-        const allGlobalHooks = suiteHooks?.globalHooks ?? [];
-        state.ctrfTest.hooks = [...allGlobalHooks, ...resolvedSuiteHooks, ...state.hooks];
-      }
-    }
   }
 
   private buildReport(): void {
@@ -403,6 +432,10 @@ export default class CtrfReporter extends WDIOReporter {
     let flaky = 0;
 
     for (const state of this.testMap.values()) {
+      if (this.opts.includeHooks) {
+        state.ctrfTest.hooks = state.hooks.length > 0 ? [...state.hooks] : undefined;
+      }
+
       let test = state.ctrfTest;
 
       if (test.status === 'other' && test.duration === 0 && !test.message && !test.trace) {
