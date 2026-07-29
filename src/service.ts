@@ -119,7 +119,7 @@ export default class CtrfService implements Services.ServiceInstance {
     // test title) and let the reporter match by type at build time.
     if (result?.passed !== false) return;
 
-    const type = classifyHookType(hookName ?? test?.title ?? '');
+    const type = classifyHookType(hookName ?? test?.title ?? test?.parent ?? '');
     shared.recordHookFailure(type, result.error);
 
     if (this.opts.screenshot.enabled) {

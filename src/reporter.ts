@@ -434,6 +434,14 @@ export default class CtrfReporter extends WDIOReporter {
     for (const state of this.testMap.values()) {
       if (this.opts.includeHooks) {
         state.ctrfTest.hooks = state.hooks.length > 0 ? [...state.hooks] : undefined;
+        // Apply service-recorded failures to test-level hooks (beforeEach /
+        // afterEach). The reporter's HookStats often lacks the error, so the
+        // service is the source of truth. Consumed in execution order.
+        if (state.ctrfTest.hooks) {
+          for (const hook of state.ctrfTest.hooks) {
+            this.applyRecordedHookFailure(hook, false);
+          }
+        }
       }
 
       let test = state.ctrfTest;
@@ -498,6 +506,30 @@ export default class CtrfReporter extends WDIOReporter {
     this.report.attachments = combinedAttachments.length > 0 ? combinedAttachments : undefined;
   }
 
+  /**
+   * Apply a service-recorded hook failure (status + message/trace + attachments
+   * such as the failure screenshot) to a hook. The service is the source of
+   * truth for hook pass/fail because the reporter's HookStats frequently lacks
+   * the error. Failures are consumed FIFO from per-type queues so they align
+   * with execution order.
+   */
+  private applyRecordedHookFailure(hook: CtrfHook, allowUnknownFallback: boolean): void {
+    let result = shared.takeHookResult(hook.type ?? 'unknown');
+    if (!result && allowUnknownFallback) {
+      result = shared.takeHookResult('unknown');
+    }
+    if (!result) return;
+    if (result.failed) {
+      hook.status = 'failed';
+      if (result.message && !hook.message) hook.message = result.message;
+      if (result.trace && !hook.trace) hook.trace = result.trace;
+    }
+    if (result.attachments.length > 0) {
+      const normalized = result.attachments.map((att) => this.normalizeAttachment(att));
+      hook.attachments = [...(hook.attachments ?? []), ...normalized];
+    }
+  }
+
   private normalizeAttachment(att: CtrfAttachment): CtrfAttachment {
     if (att.path && !path.isAbsolute(att.path)) {
       return { ...att, path: path.resolve(att.path) };
@@ -537,17 +569,10 @@ export default class CtrfReporter extends WDIOReporter {
         // Add global hooks if present
         if (this.opts.includeHooks && suiteState && suiteState.globalHooks.length > 0) {
           for (const globalHook of suiteState.globalHooks) {
-            const hookResult = shared.takeHookResult(globalHook.type ?? 'unknown');
-            if (!hookResult) continue;
-            if (hookResult.failed) {
-              globalHook.status = 'failed';
-              if (hookResult.message && !globalHook.message) globalHook.message = hookResult.message;
-              if (hookResult.trace && !globalHook.trace) globalHook.trace = hookResult.trace;
-            }
-            if (hookResult.attachments.length > 0) {
-              const normalized = hookResult.attachments.map((att) => this.normalizeAttachment(att));
-              globalHook.attachments = [...(globalHook.attachments ?? []), ...normalized];
-            }
+            // Global hooks allow an `unknown`-type fallback: older WDIO versions
+            // don't pass `hookName` to the service, so a genuine before/after
+            // all failure can be recorded under `unknown`.
+            this.applyRecordedHookFailure(globalHook, true);
           }
           ctrfSuite.globalHooks = suiteState.globalHooks;
         }
