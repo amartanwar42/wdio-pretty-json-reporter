@@ -35,6 +35,20 @@ const globalHookLogs = new Map<string, CtrfLogEntry[]>();
 /** Global hook attachments keyed by suite::hookTitle for reporter pickup */
 const globalHookAttachments = new Map<string, CtrfAttachment[]>();
 
+interface HookResult {
+  failed: boolean;
+  message?: string;
+  trace?: string;
+  attachments: CtrfAttachment[];
+}
+
+/** Hook results recorded by the service (source of truth for hook pass/fail),
+ *  keyed by hook title. Applied by the reporter at report-build time. */
+const hookResults = new Map<string, HookResult>();
+
+/** Session-level attachments (e.g. appium.log) not tied to any single test. */
+let globalAttachmentSink: CtrfAttachment[] = [];
+
 export function setActiveTest(suite: string, test: string): void {
   activeTest = { suite, test, attachments: [], logs: [] };
 }
@@ -124,12 +138,44 @@ export function pullGlobalHookAttachments(suite: string, hookTitle: string): Ctr
   return attachments;
 }
 
+export function recordHookFailure(hookTitle: string, error?: Error): void {
+  const existing = hookResults.get(hookTitle) ?? { failed: false, attachments: [] };
+  existing.failed = true;
+  if (error) {
+    existing.message = error.message;
+    existing.trace = error.stack;
+  }
+  hookResults.set(hookTitle, existing);
+}
+
+export function addHookAttachment(hookTitle: string, att: CtrfAttachment): void {
+  const existing = hookResults.get(hookTitle) ?? { failed: false, attachments: [] };
+  existing.attachments.push(att);
+  hookResults.set(hookTitle, existing);
+}
+
+export function getHookResult(hookTitle: string): { failed: boolean; message?: string; trace?: string; attachments: CtrfAttachment[] } | undefined {
+  return hookResults.get(hookTitle);
+}
+
+export function addGlobalAttachment(att: CtrfAttachment): void {
+  globalAttachmentSink.push(att);
+}
+
+export function pullGlobalAttachments(): CtrfAttachment[] {
+  const copy = globalAttachmentSink;
+  globalAttachmentSink = [];
+  return copy;
+}
+
 export function clearAll(): void {
   activeTest = null;
   activeGlobalHook = null;
   archive.clear();
   globalHookLogs.clear();
   globalHookAttachments.clear();
+  hookResults.clear();
+  globalAttachmentSink = [];
 }
 
 function normalizeLoglevel(level: string): CtrfLogEntry['level'] {

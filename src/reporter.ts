@@ -491,7 +491,30 @@ export default class CtrfReporter extends WDIOReporter {
       this.report.tests = tests;
     }
     
-    this.report.attachments = this.globalAttachments.length > 0 ? this.globalAttachments : undefined;
+    // Merge per-test global attachments with session-level attachments
+    // (e.g. appium.log) captured by the service, de-duplicating by content.
+    const sessionAttachments = shared.pullGlobalAttachments().map((att) => this.normalizeAttachment(att));
+    const combinedAttachments = this.dedupeAttachments([...this.globalAttachments, ...sessionAttachments]);
+    this.report.attachments = combinedAttachments.length > 0 ? combinedAttachments : undefined;
+  }
+
+  private normalizeAttachment(att: CtrfAttachment): CtrfAttachment {
+    if (att.path && !path.isAbsolute(att.path)) {
+      return { ...att, path: path.resolve(att.path) };
+    }
+    return att;
+  }
+
+  private dedupeAttachments(attachments: CtrfAttachment[]): CtrfAttachment[] {
+    const seen = new Set<string>();
+    const result: CtrfAttachment[] = [];
+    for (const att of attachments) {
+      const key = `${att.category}|${att.path ?? att.content ?? att.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(att);
+    }
+    return result;
   }
 
   private buildSuiteHierarchy(tests: CtrfTest[]): CtrfSuite[] {
@@ -513,6 +536,19 @@ export default class CtrfReporter extends WDIOReporter {
         
         // Add global hooks if present
         if (this.opts.includeHooks && suiteState && suiteState.globalHooks.length > 0) {
+          for (const globalHook of suiteState.globalHooks) {
+            const hookResult = shared.getHookResult(globalHook.title);
+            if (!hookResult) continue;
+            if (hookResult.failed) {
+              globalHook.status = 'failed';
+              if (hookResult.message && !globalHook.message) globalHook.message = hookResult.message;
+              if (hookResult.trace && !globalHook.trace) globalHook.trace = hookResult.trace;
+            }
+            if (hookResult.attachments.length > 0) {
+              const normalized = hookResult.attachments.map((att) => this.normalizeAttachment(att));
+              globalHook.attachments = [...(globalHook.attachments ?? []), ...normalized];
+            }
+          }
           ctrfSuite.globalHooks = suiteState.globalHooks;
         }
         

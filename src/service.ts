@@ -90,23 +90,49 @@ export default class CtrfService implements Services.ServiceInstance {
   }
 
   async afterHook(
-    _test: unknown,
+    hook: { title?: string; parent?: string },
     _context: unknown,
     result: { passed: boolean; error?: Error }
   ): Promise<void> {
-    // Capture a screenshot when a hook (e.g. `before all`) fails, so the
-    // failure has visual context. The reporter routes this attachment to the
-    // active global hook via shared state.
+    // Capture failure context when a hook (e.g. `before all`) fails. The
+    // service is the source of truth for hook pass/fail because the reporter's
+    // HookStats often lacks the error. Results are keyed by hook title and
+    // applied to the report by the reporter at build time.
     if (result?.passed !== false) return;
-    if (!this.opts.screenshot.enabled) return;
 
-    const fileName = `hook_failure_${Date.now()}.png`;
-    const screenshotPath = path.resolve(this.opts.screenshot.path, fileName);
-    try {
-      await browser.saveScreenshot(screenshotPath);
-      attach.screenshot(screenshotPath, fileName.replace(/\.png$/, ''));
-    } catch (e) {
-      shared.addLog('warn', `Failed to capture hook screenshot: ${(e as Error).message}`);
+    const title = hook?.title ?? 'hook';
+    shared.recordHookFailure(title, result.error);
+
+    if (this.opts.screenshot.enabled) {
+      const fileName = `hook_failure_${Date.now()}.png`;
+      const screenshotPath = path.resolve(this.opts.screenshot.path, fileName);
+      try {
+        await browser.saveScreenshot(screenshotPath);
+        shared.addHookAttachment(title, {
+          name: fileName.replace(/\.png$/, ''),
+          path: screenshotPath,
+          type: 'image/png',
+          category: 'screenshot',
+          timestamp: Date.now(),
+        });
+      } catch (e) {
+        shared.addLog('warn', `Failed to capture hook screenshot: ${(e as Error).message}`);
+      }
+    }
+
+    if (this.opts.pageSource.enabled) {
+      try {
+        const source = await browser.getPageSource();
+        shared.addHookAttachment(title, {
+          name: 'page-source.html',
+          content: source,
+          type: 'text/html',
+          category: 'trace',
+          timestamp: Date.now(),
+        });
+      } catch (e) {
+        shared.addLog('warn', `Failed to capture hook page source: ${(e as Error).message}`);
+      }
     }
   }
 
@@ -145,25 +171,48 @@ export default class CtrfService implements Services.ServiceInstance {
       }
     }
 
-    // ── Attach configured log files ──
+    // Archive for reporter
+    shared.clearActiveTest();
+  }
+
+  /**
+   * Attach session-level artifacts (Appium log, configured logs, network HAR)
+   * once per worker. Done here rather than in `afterTest` so they are captured
+   * even when every test is skipped (e.g. a failed `before all` hook) and are
+   * not duplicated across tests.
+   */
+  after(): void {
     for (const logPath of this.opts.attachLogs) {
       if (fs.existsSync(logPath)) {
-        attach.logFile(logPath, path.basename(logPath));
+        shared.addGlobalAttachment({
+          name: path.basename(logPath),
+          path: path.resolve(logPath),
+          type: 'text/plain',
+          category: 'log',
+          timestamp: Date.now(),
+        });
       }
     }
 
-    // ── Attach Appium log ──
     if (this.opts.appiumLogPath && fs.existsSync(this.opts.appiumLogPath)) {
-      attach.appiumLog(this.opts.appiumLogPath);
+      shared.addGlobalAttachment({
+        name: 'appium-server.log',
+        path: path.resolve(this.opts.appiumLogPath),
+        type: 'text/plain',
+        category: 'trace',
+        timestamp: Date.now(),
+      });
     }
 
-    // ── Attach network HAR ──
     if (this.opts.networkHarPath && fs.existsSync(this.opts.networkHarPath)) {
-      attach.networkHar(this.opts.networkHarPath);
+      shared.addGlobalAttachment({
+        name: 'network.har',
+        path: path.resolve(this.opts.networkHarPath),
+        type: 'application/json',
+        category: 'network',
+        timestamp: Date.now(),
+      });
     }
-
-    // Archive for reporter
-    shared.clearActiveTest();
   }
 
   private buildScreenshotName(suite: string, test: string): string {
