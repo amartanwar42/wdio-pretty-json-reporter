@@ -195,6 +195,8 @@ export interface CtrfReporterOptions {
   outputDir?: string;
   /** Output filename (default: wdio-ctrf-report.json) */
   outputFile?: string;
+  /** Use unique per-worker output files to avoid parallel-run overwrites (default: unique) */
+  outputFileStrategy?: 'unique' | 'static';
   /** Minimum log level: trace, debug, info, warn, error, silent (default: info) */
   logLevel?: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'silent';
   /** Capture console logs into report (default: true) */

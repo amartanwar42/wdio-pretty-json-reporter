@@ -13,6 +13,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
+    "wdio-pretty-json-merge": "dist/merge-reports.js",
     "wdio-pretty-json-upload-s3": "dist/s3-uploader.js"
   },
   "exports": {
@@ -35,6 +36,11 @@
       "import": "./dist/s3-uploader.js",
       "require": "./dist/s3-uploader.js",
       "types": "./dist/s3-uploader.d.ts"
+    },
+    "./merge-reports": {
+      "import": "./dist/merge-reports.js",
+      "require": "./dist/merge-reports.js",
+      "types": "./dist/merge-reports.d.ts"
     }
   },
   "files": [
@@ -46,6 +52,7 @@
     "build:watch": "tsc --watch",
     "lint": "eslint src/**/*.ts",
     "test": "jest",
+    "merge:reports": "node dist/merge-reports.js",
     "upload:s3": "node dist/s3-uploader.js",
     "prepublishOnly": "npm run build"
   },

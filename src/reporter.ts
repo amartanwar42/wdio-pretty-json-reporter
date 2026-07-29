@@ -17,6 +17,7 @@ import * as shared from './shared-state';
 export interface CtrfReporterOptions extends Reporters.Options {
   outputDir?: string;
   outputFile?: string;
+  outputFileStrategy?: 'unique' | 'static';
   logLevel?: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'silent';
   captureLogs?: boolean;
   environment?: Partial<CtrfEnvironment>;
@@ -48,7 +49,7 @@ type LogLevel = (typeof LOG_LEVELS)[number];
 
 export default class CtrfReporter extends WDIOReporter {
   private opts: Required<Pick<CtrfReporterOptions,
-    'outputDir' | 'outputFile' | 'logLevel' | 'captureLogs' | 'tags' | 'testType' | 'metadata'
+    'outputDir' | 'outputFile' | 'outputFileStrategy' | 'logLevel' | 'captureLogs' | 'tags' | 'testType' | 'metadata'
   >> & Pick<CtrfReporterOptions, 'environment' | 'transformTest' | 'onComplete'> & {
     includeHooks: true;
     includeRetries: true;
@@ -63,6 +64,7 @@ export default class CtrfReporter extends WDIOReporter {
   private suiteCount = 0;
   private currentSuite = '';
   private currentSpecFile = '';
+  private runnerCid = '';
   private runnerStartTime = 0;
   private runnerEndTime = 0;
   private globalAttachments: CtrfAttachment[] = [];
@@ -75,6 +77,7 @@ export default class CtrfReporter extends WDIOReporter {
     this.opts = {
       outputDir: options.outputDir ?? './ctrf',
       outputFile: options.outputFile ?? 'wdio-ctrf-report.json',
+      outputFileStrategy: options.outputFileStrategy ?? 'unique',
       logLevel: options.logLevel ?? 'info',
       captureLogs: options.captureLogs ?? true,
       tags: options.tags ?? [],
@@ -95,6 +98,7 @@ export default class CtrfReporter extends WDIOReporter {
   onRunnerStart(runner: RunnerStats): void {
     this.runnerStartTime = Date.now();
     this.currentSpecFile = runner.specs?.[0] ?? '';
+    this.runnerCid = runner.cid ?? '';
     shared.clearAll();
 
     this.report.tool = {
@@ -604,10 +608,12 @@ export default class CtrfReporter extends WDIOReporter {
 
   private writeReport(): void {
     const outputDir = path.resolve(this.opts.outputDir);
-    const outputPath = path.join(outputDir, this.opts.outputFile);
+    const outputPath = this.resolveOutputPath(outputDir);
     try {
       if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
-      fs.writeFileSync(outputPath, JSON.stringify(this.report, null, 2), 'utf-8');
+      const tmpPath = `${outputPath}.${process.pid}.${Date.now()}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(this.report, null, 2), 'utf-8');
+      fs.renameSync(tmpPath, outputPath);
       this.log('info', `CTRF report written to: ${outputPath}`);
       if (this.opts.onComplete) {
         Promise.resolve(this.opts.onComplete(this.report, outputPath)).catch((err) => {
@@ -618,6 +624,28 @@ export default class CtrfReporter extends WDIOReporter {
       this.log('error', `Failed to write report: ${(err as Error).message}`);
       throw err;
     }
+  }
+
+  private resolveOutputPath(outputDir: string): string {
+    if (this.opts.outputFileStrategy === 'static') {
+      return path.join(outputDir, this.opts.outputFile);
+    }
+
+    const parsed = path.parse(this.opts.outputFile);
+    const baseName = parsed.name || 'wdio-ctrf-report';
+    const extension = parsed.ext || '.json';
+    const specName = this.currentSpecFile
+      ? path.basename(this.currentSpecFile, path.extname(this.currentSpecFile))
+      : 'worker';
+    const parts = [baseName, this.runnerCid, specName, String(process.pid), String(this.runnerStartTime)]
+      .filter(Boolean)
+      .map((part) => this.safeFilePart(part));
+
+    return path.join(outputDir, `${parts.join('-')}${extension}`);
+  }
+
+  private safeFilePart(value: string): string {
+    return value.replace(/[^a-zA-Z0-9._-]/g, '_').replace(/_+/g, '_').slice(0, 80) || 'unknown';
   }
 
   private getCap(caps: Record<string, unknown>, ...keys: string[]): string | undefined {

@@ -6,3 +6,5 @@ export type { CtrfReporterOptions } from './reporter';
 export { ctrf, attach, log, captureScreenshot } from './api';
 export { uploadWdioPrettyJsonToS3 } from './s3-uploader';
 export type { UploadWdioPrettyJsonToS3Options } from './s3-uploader';
+export { mergeWdioPrettyJsonReports } from './merge-reports';
+export type { MergeWdioPrettyJsonReportsOptions } from './merge-reports';

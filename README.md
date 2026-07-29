@@ -85,8 +85,19 @@ npx wdio run wdio.conf.ts
 ### 3. Find your report
 
 ```bash
-cat ./ctrf/wdio-ctrf-report.json | jq '.summary'
+ls ./wdio-pretty-json/*.json
+jq '.summary' ./wdio-pretty-json/*.json
 ```
+
+### 4. Merge parallel worker reports
+
+Parallel WDIO workers write separate JSON files to avoid overwrites. Merge them into one report before publishing or uploading:
+
+```bash
+npx wdio-pretty-json-merge ./wdio-pretty-json ./wdio-pretty-json-merged
+```
+
+This creates `./wdio-pretty-json-merged/wdio-ctrf-report.json` and copies non-JSON assets such as screenshots, logs, videos, HTML, and HAR files into the merged output folder.
 
 ---
 
@@ -96,6 +107,7 @@ cat ./ctrf/wdio-ctrf-report.json | jq '.summary'
 |--------|------|---------|-------------|
 | `outputDir` | `string` | `./ctrf` | Directory for JSON report |
 | `outputFile` | `string` | `wdio-ctrf-report.json` | Report filename |
+| `outputFileStrategy` | `'unique' \| 'static'` | `'unique'` | Use unique per-worker files to avoid overwrites in parallel runs. Set to `'static'` only when a single worker should write one fixed filename |
 | `logLevel` | `string` | `info` | `trace` / `debug` / `info` / `warn` / `error` / `silent` |
 | `captureLogs` | `boolean` | `true` | Capture console logs into report |
 | `environment` | `object` | `{}` | Custom environment metadata |
@@ -104,6 +116,8 @@ cat ./ctrf/wdio-ctrf-report.json | jq '.summary'
 | `metadata` | `object` | `{}` | Custom metadata per test |
 | `transformTest` | `function` | — | Transform or filter tests before writing |
 | `onComplete` | `function` | — | Callback after report is written |
+
+By default, each WDIO worker writes a unique report file like `wdio-ctrf-report-<cid>-<spec>-<pid>-<start>.json`. This prevents parallel sessions from overwriting each other in CI pipelines. If you run only one worker and need the old fixed filename, set `outputFileStrategy: 'static'`.
 
 ---
 
@@ -127,21 +141,35 @@ cat ./ctrf/wdio-ctrf-report.json | jq '.summary'
 
 ## Upload Reports to S3
 
-The package includes a generic S3 uploader for the generated report folder. It uploads every file in the report directory, preserves nested assets such as screenshots, and can maintain a `reports-index.json` for dashboards.
+The package includes a generic S3 uploader for the generated report folder. For parallel runs, run the merge command first, then upload the merged folder. That keeps S3 uploads simple: one merged JSON report plus screenshots and other assets.
+
+```bash
+npx wdio-pretty-json-merge ./wdio-pretty-json ./wdio-pretty-json-merged
+```
 
 Set the below variables in .env
 ```bash
 REPORTS_S3_BUCKET=my-report-bucket \
 REPORTS_S3_PREFIX=my-project \
-REPORTS_DIR=./wdio-pretty-json \
+REPORTS_DIR=./wdio-pretty-json-merged \
 npx wdio-pretty-json-upload-s3
 ```
 
 You can also pass the report folder as the first CLI argument:
 
 ```bash
-npx wdio-pretty-json-upload-s3
+npx wdio-pretty-json-upload-s3 ./wdio-pretty-json-merged
 ```
+
+The uploader pushes the merged JSON report plus screenshots and other copied assets to S3, then creates or updates `reports-index.json` using the merged report summary.
+
+### Merge Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `REPORTS_DIR` | No | `./wdio-pretty-json` | Input folder containing worker JSON reports and assets |
+| `MERGED_REPORTS_DIR` | No | `./wdio-pretty-json-merged` | Output folder for the merged report and copied assets |
+| `MERGED_REPORT_FILE` | No | `wdio-ctrf-report.json` | Merged report filename |
 
 ### S3 Upload Environment Variables
 
@@ -166,12 +194,18 @@ npx wdio-pretty-json-upload-s3
 Programmatic use is available too:
 
 ```typescript
+import { mergeWdioPrettyJsonReports } from 'wdio-pretty-json-reporter/merge-reports';
 import { uploadWdioPrettyJsonToS3 } from 'wdio-pretty-json-reporter/s3-uploader';
+
+mergeWdioPrettyJsonReports({
+  inputDir: './wdio-pretty-json',
+  outputDir: './wdio-pretty-json-merged',
+});
 
 await uploadWdioPrettyJsonToS3({
   bucket: 'my-report-bucket',
   prefix: 'my-project',
-  reportsDir: './wdio-pretty-json',
+  reportsDir: './wdio-pretty-json-merged',
 });
 ```
 
