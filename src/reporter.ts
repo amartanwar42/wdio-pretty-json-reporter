@@ -431,6 +431,10 @@ export default class CtrfReporter extends WDIOReporter {
     let other = 0;
     let flaky = 0;
 
+    if (this.opts.includeHooks) {
+      this.applyRecordedGlobalHookFailures();
+    }
+
     for (const state of this.testMap.values()) {
       if (this.opts.includeHooks) {
         state.ctrfTest.hooks = state.hooks.length > 0 ? [...state.hooks] : undefined;
@@ -518,6 +522,9 @@ export default class CtrfReporter extends WDIOReporter {
     if (!result && allowUnknownFallback) {
       result = shared.takeHookResult('unknown');
     }
+    if (!result && allowUnknownFallback) {
+      result = shared.takeAnyHookResult();
+    }
     if (!result) return;
     if (result.failed) {
       hook.status = 'failed';
@@ -527,6 +534,14 @@ export default class CtrfReporter extends WDIOReporter {
     if (result.attachments.length > 0) {
       const normalized = result.attachments.map((att) => this.normalizeAttachment(att));
       hook.attachments = [...(hook.attachments ?? []), ...normalized];
+    }
+  }
+
+  private applyRecordedGlobalHookFailures(): void {
+    for (const suiteState of this.suiteMap.values()) {
+      for (const globalHook of suiteState.globalHooks) {
+        this.applyRecordedHookFailure(globalHook, true);
+      }
     }
   }
 
@@ -568,12 +583,6 @@ export default class CtrfReporter extends WDIOReporter {
         
         // Add global hooks if present
         if (this.opts.includeHooks && suiteState && suiteState.globalHooks.length > 0) {
-          for (const globalHook of suiteState.globalHooks) {
-            // Global hooks allow an `unknown`-type fallback: older WDIO versions
-            // don't pass `hookName` to the service, so a genuine before/after
-            // all failure can be recorded under `unknown`.
-            this.applyRecordedHookFailure(globalHook, true);
-          }
           ctrfSuite.globalHooks = suiteState.globalHooks;
         }
         

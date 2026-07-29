@@ -173,6 +173,20 @@ export function takeHookResult(type: HookType): { failed: boolean; message?: str
   return queue.shift();
 }
 
+/**
+ * Shift any recorded hook failure. Used as a last-resort fallback: if the
+ * service captured a hook-failure screenshot but classification did not match
+ * the reporter hook, do not leave that known failure stranded as `passed`.
+ */
+export function takeAnyHookResult(): { failed: boolean; message?: string; trace?: string; attachments: CtrfAttachment[] } | undefined {
+  for (const queue of hookResults.values()) {
+    if (queue.length > 0) {
+      return queue.shift();
+    }
+  }
+  return undefined;
+}
+
 export function addGlobalAttachment(att: CtrfAttachment): void {
   globalAttachmentSink.push(att);
 }
