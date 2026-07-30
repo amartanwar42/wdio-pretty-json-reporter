@@ -1,4 +1,4 @@
-import WDIOReporter, { RunnerStats, SuiteStats, TestStats, HookStats } from '@wdio/reporter';
+import WDIOReporter, { RunnerStats, SuiteStats, TestStats, HookStats, BeforeCommandArgs } from '@wdio/reporter';
 import type { Reporters } from '@wdio/types';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -20,6 +20,9 @@ export interface CtrfReporterOptions extends Reporters.Options {
   outputFileStrategy?: 'unique' | 'static';
   logLevel?: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'silent';
   captureLogs?: boolean;
+  /** Automatically log meaningful WebDriver/Appium commands (click, setValue,
+   *  navigation, etc.) as they happen. Sensitive input values are never logged. */
+  captureCommands?: boolean;
   environment?: Partial<CtrfEnvironment>;
   tags?: string[];
   testType?: string;
@@ -49,7 +52,7 @@ type LogLevel = (typeof LOG_LEVELS)[number];
 
 export default class CtrfReporter extends WDIOReporter {
   private opts: Required<Pick<CtrfReporterOptions,
-    'outputDir' | 'outputFile' | 'outputFileStrategy' | 'logLevel' | 'captureLogs' | 'tags' | 'testType' | 'metadata'
+    'outputDir' | 'outputFile' | 'outputFileStrategy' | 'logLevel' | 'captureLogs' | 'captureCommands' | 'tags' | 'testType' | 'metadata'
   >> & Pick<CtrfReporterOptions, 'environment' | 'transformTest' | 'onComplete'> & {
     includeHooks: true;
     includeRetries: true;
@@ -71,6 +74,10 @@ export default class CtrfReporter extends WDIOReporter {
   private currentGlobalHookBeingProcessed: CtrfHook | null = null;
   private pendingBeforeEachHooks: CtrfHook[] = [];
   private lastStartedTestState: InternalTestState | null = null;
+  /** Current destination for logs, owned by the reporter (test or hook). Used
+   *  both by the in-process log API (via shared.setLogSink) and by the
+   *  command-event handlers below, so attribution never depends on the service. */
+  private activeSink: ((entry: CtrfLogEntry) => void) | null = null;
 
   constructor(options: CtrfReporterOptions) {
     super(options);
@@ -80,6 +87,7 @@ export default class CtrfReporter extends WDIOReporter {
       outputFileStrategy: options.outputFileStrategy ?? 'unique',
       logLevel: options.logLevel ?? 'info',
       captureLogs: options.captureLogs ?? true,
+      captureCommands: options.captureCommands ?? true,
       tags: options.tags ?? [],
       testType: options.testType ?? 'e2e',
       metadata: options.metadata ?? {},
@@ -124,7 +132,7 @@ export default class CtrfReporter extends WDIOReporter {
 
   onSuiteStart(suite: SuiteStats): void {
     this.currentSuite = suite.title;
-    shared.setLogSink(null);
+    this.routeLogsTo(null);
     const state: InternalSuiteState = { 
       hooks: [],
       globalHooks: [],
@@ -156,7 +164,7 @@ export default class CtrfReporter extends WDIOReporter {
     // body directly into the test's state, independent of the service.
     if (this.opts.captureLogs) {
       const state = this.testMap.get(key)!;
-      shared.setLogSink((entry) => {
+      this.routeLogsTo((entry) => {
         state.logs.push(entry);
         state.attemptLogs.push(entry);
       });
@@ -244,7 +252,7 @@ export default class CtrfReporter extends WDIOReporter {
 
     // Stop routing logs to this test; the following afterEach hook (if any)
     // sets its own sink in onHookStart.
-    shared.setLogSink(null);
+    this.routeLogsTo(null);
 
     this.applySharedTestData(state, this.currentSuite, test.title);
   }
@@ -311,7 +319,7 @@ export default class CtrfReporter extends WDIOReporter {
     // Route logs emitted during this hook body straight to the hook, regardless
     // of hook type. Works with or without the service loaded.
     if (this.opts.captureLogs) {
-      shared.setLogSink((entry) => {
+      this.routeLogsTo((entry) => {
         (hookData.logs ??= []).push(entry);
       });
     }
@@ -327,7 +335,7 @@ export default class CtrfReporter extends WDIOReporter {
       ctrfHook.duration = ctrfHook.stop - ctrfHook.start;
 
       // Stop routing logs to this hook now that its body has finished.
-      shared.setLogSink(null);
+      this.routeLogsTo(null);
 
       // WDIO surfaces hook failures inconsistently: sometimes via `error`,
       // sometimes via an `errors[]` array, and sometimes only via `state`.
@@ -387,6 +395,58 @@ export default class CtrfReporter extends WDIOReporter {
     this.runnerEndTime = Date.now();
     this.buildReport();
     this.writeReport();
+  }
+
+  /** Single owner of log attribution. Points both the in-process log API
+   *  (shared.setLogSink, used by browser.ctrf.log / CommonUtil.log) and the
+   *  command-event handlers at the same test/hook target. */
+  private routeLogsTo(sink: ((entry: CtrfLogEntry) => void) | null): void {
+    this.activeSink = sink;
+    shared.setLogSink(sink);
+  }
+
+  /** WDIO emits this for every WebDriver/Appium command in-process, correctly
+   *  ordered relative to test/hook events. We turn the meaningful ones into
+   *  human-readable log lines so a test always has an activity trail — even
+   *  when the optional service is not loaded and no manual logs are written. */
+  onBeforeCommand(command: BeforeCommandArgs): void {
+    if (!this.opts.captureCommands || !this.activeSink) return;
+    const message = this.describeCommand(command.method, command.endpoint, command.body);
+    if (message) {
+      this.activeSink({ timestamp: Date.now(), level: 'debug', message });
+    }
+  }
+
+  /** Translate a raw WebDriver/Appium request into a readable action label.
+   *  Returns null for noisy, non-actionable commands (element lookups, polling,
+   *  attribute/state reads). Never includes typed text (may be a password). */
+  private describeCommand(method: string | undefined, endpoint: string | undefined, body: unknown): string | null {
+    if (!endpoint) return null;
+    const b = (body ?? {}) as Record<string, unknown>;
+
+    if (/\/element\/[^/]+\/click$/.test(endpoint)) return 'Clicked element';
+    if (/\/element\/[^/]+\/value$/.test(endpoint)) return 'Entered text into element';
+    if (/\/element\/[^/]+\/clear$/.test(endpoint)) return 'Cleared element';
+    if (/\/url$/.test(endpoint) && method === 'POST') {
+      return b.url ? `Navigated to ${String(b.url)}` : 'Navigated to url';
+    }
+    if (/\/back$/.test(endpoint)) return 'Navigated back';
+    if (/\/forward$/.test(endpoint)) return 'Navigated forward';
+    if (/\/refresh$/.test(endpoint)) return 'Refreshed page';
+    if (/\/actions$/.test(endpoint) && method === 'POST') return 'Performed touch/pointer actions';
+    if (/\/appium\/device\/(long_)?press_keycode$/.test(endpoint)) {
+      return b.keycode !== undefined ? `Pressed keycode ${String(b.keycode)}` : 'Pressed keycode';
+    }
+    if (/\/appium\/device\/(hide_keyboard|press_keycode)$/.test(endpoint)) return 'Hid keyboard';
+    if (/\/appium\/app\/launch$/.test(endpoint)) return 'Launched app';
+    if (/\/appium\/app\/(close|terminate)$/.test(endpoint)) return 'Closed app';
+    if (/\/appium\/app\/(background)$/.test(endpoint)) return 'Backgrounded app';
+    if (/\/appium\/app\/(reset)$/.test(endpoint)) return 'Reset app';
+    if (/\/execute(\/sync)?$/.test(endpoint) && method === 'POST') {
+      const script = typeof b.script === 'string' ? b.script.split('\n')[0].slice(0, 120) : '';
+      return script ? `Executed script: ${script}` : 'Executed script';
+    }
+    return null;
   }
 
   private createEmptyReport(): CtrfReport {
