@@ -129,17 +129,17 @@ export function addLog(level: string, message: string): void {
     level: normalizeLoglevel(level),
     message,
   };
-  
+
+  // Route each log to a single owner by priority. A running test always owns
+  // its logs, even if a global-hook (before all / after all) context lingers
+  // because its reporter `onHookEnd` has not fired yet. Otherwise attribute to
+  // the active test-level hook (beforeEach / afterEach), then the global hook.
   if (activeTest) {
     activeTest.logs.push(logEntry);
-  }
-  
-  if (activeGlobalHook) {
-    activeGlobalHook.logs.push(logEntry);
-  }
-
-  if (activeTestHook) {
+  } else if (activeTestHook) {
     activeTestHook.logs.push(logEntry);
+  } else if (activeGlobalHook) {
+    activeGlobalHook.logs.push(logEntry);
   }
 }
 
