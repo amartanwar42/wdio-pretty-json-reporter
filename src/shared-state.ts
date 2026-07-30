@@ -26,8 +26,14 @@ let activeTest: PendingTestState | null = null;
 /** Active global hook being executed (before all / after all) */
 let activeGlobalHook: ActiveGlobalHookState | null = null;
 
-/** Active test-level hook being executed (beforeEach / afterEach) */
-let activeTestHook: { type: HookType; logs: CtrfLogEntry[] } | null = null;
+/**
+ * Reporter-driven log destination. The reporter is the only component that is
+ * always loaded (the service is optional and, on some cloud grids, stripped),
+ * and it alone knows the precise test/hook boundaries. It sets this sink at the
+ * start of every test and hook so logs emitted via the `ctrf` API are attributed
+ * to the correct owner regardless of whether the service is present.
+ */
+let logSink: ((entry: CtrfLogEntry) => void) | null = null;
 
 /** All attachments/logs keyed by suite::test for reporter pickup */
 const archive = new Map<string, { attachments: CtrfAttachment[]; logs: CtrfLogEntry[] }>();
@@ -100,16 +106,12 @@ export function getActiveGlobalHook(): ActiveGlobalHookState | null {
   return activeGlobalHook;
 }
 
-/** Begin capturing logs emitted during a test-level (beforeEach/afterEach) hook body. */
-export function setActiveTestHook(type: HookType): void {
-  activeTestHook = { type, logs: [] };
-}
-
-/** Stop capturing and return the logs collected during the test-level hook body. */
-export function clearActiveTestHook(): CtrfLogEntry[] {
-  const logs = activeTestHook?.logs ?? [];
-  activeTestHook = null;
-  return logs;
+/**
+ * Set (or clear, with `null`) the destination for subsequently emitted logs.
+ * Driven by the reporter at each test/hook boundary.
+ */
+export function setLogSink(sink: ((entry: CtrfLogEntry) => void) | null): void {
+  logSink = sink;
 }
 
 export function addAttachment(att: CtrfAttachment): void {
@@ -130,14 +132,15 @@ export function addLog(level: string, message: string): void {
     message,
   };
 
-  // Route each log to a single owner by priority. A running test always owns
-  // its logs, even if a global-hook (before all / after all) context lingers
-  // because its reporter `onHookEnd` has not fired yet. Otherwise attribute to
-  // the active test-level hook (beforeEach / afterEach), then the global hook.
+  // The reporter-driven sink is authoritative: it knows exactly which test or
+  // hook is executing. Fall back to the service's active-test / global-hook
+  // context only for logs emitted outside any reporter boundary.
+  if (logSink) {
+    logSink(logEntry);
+    return;
+  }
   if (activeTest) {
     activeTest.logs.push(logEntry);
-  } else if (activeTestHook) {
-    activeTestHook.logs.push(logEntry);
   } else if (activeGlobalHook) {
     activeGlobalHook.logs.push(logEntry);
   }
@@ -219,7 +222,7 @@ export function pullGlobalAttachments(): CtrfAttachment[] {
 export function clearAll(): void {
   activeTest = null;
   activeGlobalHook = null;
-  activeTestHook = null;
+  logSink = null;
   archive.clear();
   globalHookLogs.clear();
   globalHookAttachments.clear();

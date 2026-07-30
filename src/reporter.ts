@@ -124,6 +124,7 @@ export default class CtrfReporter extends WDIOReporter {
 
   onSuiteStart(suite: SuiteStats): void {
     this.currentSuite = suite.title;
+    shared.setLogSink(null);
     const state: InternalSuiteState = { 
       hooks: [],
       globalHooks: [],
@@ -150,6 +151,16 @@ export default class CtrfReporter extends WDIOReporter {
     }
 
     this.attachPendingHooks(this.testMap.get(key)!);
+
+    // The reporter owns log attribution: route logs emitted during this test
+    // body directly into the test's state, independent of the service.
+    if (this.opts.captureLogs) {
+      const state = this.testMap.get(key)!;
+      shared.setLogSink((entry) => {
+        state.logs.push(entry);
+        state.attemptLogs.push(entry);
+      });
+    }
 
     this.log('trace', `Test started: ${test.title} (attempt ${this.testMap.get(key)!.currentAttempt})`);
   }
@@ -231,6 +242,10 @@ export default class CtrfReporter extends WDIOReporter {
     state.ctrfTest.stop = now;
     state.ctrfTest.duration = now - state.ctrfTest.start;
 
+    // Stop routing logs to this test; the following afterEach hook (if any)
+    // sets its own sink in onHookStart.
+    shared.setLogSink(null);
+
     this.applySharedTestData(state, this.currentSuite, test.title);
   }
 
@@ -291,16 +306,16 @@ export default class CtrfReporter extends WDIOReporter {
       if (this.opts.captureGlobalHookLogs) {
         shared.setActiveGlobalHook(this.currentSuite, hookData.title);
       }
-    } else if (
-      (hookData.type === 'beforeEach' || hookData.type === 'afterEach') &&
-      this.opts.captureLogs
-    ) {
-      // Capture logs emitted during the test-level hook body. activeTest is not
-      // set during beforeEach (set later in beforeTest) or afterEach (cleared in
-      // afterTest), so route these logs to a dedicated hook sink instead.
-      shared.setActiveTestHook(hookData.type);
     }
-    
+
+    // Route logs emitted during this hook body straight to the hook, regardless
+    // of hook type. Works with or without the service loaded.
+    if (this.opts.captureLogs) {
+      shared.setLogSink((entry) => {
+        (hookData.logs ??= []).push(entry);
+      });
+    }
+
     (hook as unknown as Record<string, unknown>)._ctrfHook = hookData;
   }
 
@@ -310,6 +325,9 @@ export default class CtrfReporter extends WDIOReporter {
     if (ctrfHook) {
       ctrfHook.stop = Date.now();
       ctrfHook.duration = ctrfHook.stop - ctrfHook.start;
+
+      // Stop routing logs to this hook now that its body has finished.
+      shared.setLogSink(null);
 
       // WDIO surfaces hook failures inconsistently: sometimes via `error`,
       // sometimes via an `errors[]` array, and sometimes only via `state`.
@@ -323,19 +341,21 @@ export default class CtrfReporter extends WDIOReporter {
       if (hookError) {
         ctrfHook.message = hookError.message;
         ctrfHook.trace = hookError.stack;
-        ctrfHook.logs = [{
+        // Preserve any logs captured during the hook body and append the error.
+        (ctrfHook.logs ??= []).push({
           timestamp: ctrfHook.stop,
           level: 'error',
           message: hookError.message,
-        }];
+        });
       }
       
-      // Capture logs + attachments (e.g. failure screenshots) from global hooks
+      // Capture attachments (e.g. failure screenshots) from global hooks. Logs
+      // are already attached to `ctrfHook.logs` via the reporter log sink.
       if (this.opts.captureGlobalHookLogs && (ctrfHook.type === 'before' || ctrfHook.type === 'after')) {
         const clearResult = shared.clearActiveGlobalHook();
         if (clearResult) {
-          if (clearResult.logs.length > 0 && ctrfHook.logs === undefined) {
-            ctrfHook.logs = clearResult.logs;
+          if (clearResult.logs.length > 0) {
+            ctrfHook.logs = [...(ctrfHook.logs ?? []), ...clearResult.logs];
           }
           if (clearResult.attachments.length > 0) {
             const normalized = clearResult.attachments.map((att) =>
@@ -346,11 +366,9 @@ export default class CtrfReporter extends WDIOReporter {
         }
       } else if (ctrfHook.type === 'beforeEach') {
         // Attribute to the next test that starts.
-        this.applyTestHookLogs(ctrfHook);
         this.pendingBeforeEachHooks.push(ctrfHook);
       } else if (ctrfHook.type === 'afterEach') {
         // Attribute to the test that just ran.
-        this.applyTestHookLogs(ctrfHook);
         if (this.lastStartedTestState) {
           this.lastStartedTestState.hooks.push(ctrfHook);
         } else {
@@ -369,15 +387,6 @@ export default class CtrfReporter extends WDIOReporter {
     this.runnerEndTime = Date.now();
     this.buildReport();
     this.writeReport();
-  }
-
-  /** Attach logs captured during a test-level hook body to the hook object. */
-  private applyTestHookLogs(hook: CtrfHook): void {
-    if (!this.opts.captureLogs) return;
-    const hookLogs = shared.clearActiveTestHook();
-    if (hookLogs.length > 0) {
-      hook.logs = [...(hook.logs ?? []), ...hookLogs];
-    }
   }
 
   private createEmptyReport(): CtrfReport {
