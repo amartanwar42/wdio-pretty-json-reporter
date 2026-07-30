@@ -26,6 +26,9 @@ let activeTest: PendingTestState | null = null;
 /** Active global hook being executed (before all / after all) */
 let activeGlobalHook: ActiveGlobalHookState | null = null;
 
+/** Active test-level hook being executed (beforeEach / afterEach) */
+let activeTestHook: { type: HookType; logs: CtrfLogEntry[] } | null = null;
+
 /** All attachments/logs keyed by suite::test for reporter pickup */
 const archive = new Map<string, { attachments: CtrfAttachment[]; logs: CtrfLogEntry[] }>();
 
@@ -97,6 +100,18 @@ export function getActiveGlobalHook(): ActiveGlobalHookState | null {
   return activeGlobalHook;
 }
 
+/** Begin capturing logs emitted during a test-level (beforeEach/afterEach) hook body. */
+export function setActiveTestHook(type: HookType): void {
+  activeTestHook = { type, logs: [] };
+}
+
+/** Stop capturing and return the logs collected during the test-level hook body. */
+export function clearActiveTestHook(): CtrfLogEntry[] {
+  const logs = activeTestHook?.logs ?? [];
+  activeTestHook = null;
+  return logs;
+}
+
 export function addAttachment(att: CtrfAttachment): void {
   if (activeGlobalHook) {
     activeGlobalHook.attachments.push(att);
@@ -121,6 +136,10 @@ export function addLog(level: string, message: string): void {
   
   if (activeGlobalHook) {
     activeGlobalHook.logs.push(logEntry);
+  }
+
+  if (activeTestHook) {
+    activeTestHook.logs.push(logEntry);
   }
 }
 
@@ -200,6 +219,7 @@ export function pullGlobalAttachments(): CtrfAttachment[] {
 export function clearAll(): void {
   activeTest = null;
   activeGlobalHook = null;
+  activeTestHook = null;
   archive.clear();
   globalHookLogs.clear();
   globalHookAttachments.clear();

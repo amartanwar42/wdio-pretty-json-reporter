@@ -231,7 +231,13 @@ export default class CtrfReporter extends WDIOReporter {
     state.ctrfTest.stop = now;
     state.ctrfTest.duration = now - state.ctrfTest.start;
 
-    const sharedData = shared.pullTestData(this.currentSuite, test.title);
+    this.applySharedTestData(state, this.currentSuite, test.title);
+  }
+
+  private applySharedTestData(state: InternalTestState, suite: string | undefined, title: string): void {
+    if (!suite) return;
+
+    const sharedData = shared.pullTestData(suite, title);
     if (sharedData.attachments.length > 0) {
       const normalizedAttachments = sharedData.attachments.map((attachment) => {
         if (!attachment.path) return attachment;
@@ -285,6 +291,14 @@ export default class CtrfReporter extends WDIOReporter {
       if (this.opts.captureGlobalHookLogs) {
         shared.setActiveGlobalHook(this.currentSuite, hookData.title);
       }
+    } else if (
+      (hookData.type === 'beforeEach' || hookData.type === 'afterEach') &&
+      this.opts.captureLogs
+    ) {
+      // Capture logs emitted during the test-level hook body. activeTest is not
+      // set during beforeEach (set later in beforeTest) or afterEach (cleared in
+      // afterTest), so route these logs to a dedicated hook sink instead.
+      shared.setActiveTestHook(hookData.type);
     }
     
     (hook as unknown as Record<string, unknown>)._ctrfHook = hookData;
@@ -332,9 +346,11 @@ export default class CtrfReporter extends WDIOReporter {
         }
       } else if (ctrfHook.type === 'beforeEach') {
         // Attribute to the next test that starts.
+        this.applyTestHookLogs(ctrfHook);
         this.pendingBeforeEachHooks.push(ctrfHook);
       } else if (ctrfHook.type === 'afterEach') {
         // Attribute to the test that just ran.
+        this.applyTestHookLogs(ctrfHook);
         if (this.lastStartedTestState) {
           this.lastStartedTestState.hooks.push(ctrfHook);
         } else {
@@ -353,6 +369,15 @@ export default class CtrfReporter extends WDIOReporter {
     this.runnerEndTime = Date.now();
     this.buildReport();
     this.writeReport();
+  }
+
+  /** Attach logs captured during a test-level hook body to the hook object. */
+  private applyTestHookLogs(hook: CtrfHook): void {
+    if (!this.opts.captureLogs) return;
+    const hookLogs = shared.clearActiveTestHook();
+    if (hookLogs.length > 0) {
+      hook.logs = [...(hook.logs ?? []), ...hookLogs];
+    }
   }
 
   private createEmptyReport(): CtrfReport {
@@ -440,6 +465,11 @@ export default class CtrfReporter extends WDIOReporter {
     }
 
     for (const state of this.testMap.values()) {
+      // In parallel runs, reporter `onTestEnd` can fire before service
+      // `afterTest` archives active test logs/attachments. Pull again at build
+      // time, using the stored suite/name, after service hooks have run.
+      this.applySharedTestData(state, state.ctrfTest.suite, state.ctrfTest.name);
+
       if (this.opts.includeHooks) {
         state.ctrfTest.hooks = state.hooks.length > 0 ? [...state.hooks] : undefined;
         // Apply service-recorded failures to test-level hooks (beforeEach /
