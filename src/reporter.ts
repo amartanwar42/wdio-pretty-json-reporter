@@ -21,13 +21,13 @@ export interface CtrfReporterOptions extends Reporters.Options {
   logLevel?: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'silent';
   captureLogs?: boolean;
   /** Automatically log meaningful WebDriver/Appium commands (click, setValue,
-   *  navigation, etc.) as they happen. Sensitive input values are never logged. */
+   * navigation, etc.) as they happen. Sensitive input values are never logged. */
   captureCommands?: boolean;
   environment?: Partial<CtrfEnvironment>;
   tags?: string[];
   testType?: string;
   metadata?: Record<string, unknown>;
-  transformTest?: (test: CtrfTest) => CtrfTest | null;
+  transformTest?: ((test: CtrfTest) => CtrfTest | null) | undefined;
   onComplete?: (report: CtrfReport, outputPath: string) => void | Promise<void>;
 }
 
@@ -47,37 +47,51 @@ interface InternalSuiteState {
   globalHookLogs: CtrfLogEntry[]; // logs from global hooks
 }
 
+interface WorkerState {
+  report: CtrfReport;
+  testMap: Map<string, InternalTestState>;
+  suiteMap: Map<string, InternalSuiteState>;
+  suiteCount: number;
+  currentSuite: string;
+  currentSpecFile: string;
+  runnerCid: string;
+  runnerStartTime: number;
+  runnerEndTime: number;
+  globalAttachments: CtrfAttachment[];
+  currentGlobalHookBeingProcessed: CtrfHook | null;
+  pendingBeforeEachHooks: CtrfHook[];
+  lastStartedTestState: InternalTestState | null;
+  activeSink: ((entry: CtrfLogEntry) => void) | null;
+}
+
 const LOG_LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'silent'] as const;
 type LogLevel = (typeof LOG_LEVELS)[number];
 
 export default class CtrfReporter extends WDIOReporter {
-  private opts: Required<Pick<CtrfReporterOptions,
-    'outputDir' | 'outputFile' | 'outputFileStrategy' | 'logLevel' | 'captureLogs' | 'captureCommands' | 'tags' | 'testType' | 'metadata'
-  >> & Pick<CtrfReporterOptions, 'environment' | 'transformTest' | 'onComplete'> & {
-    includeHooks: true;
-    includeRetries: true;
-    markFlaky: true;
-    structureByHooks: true;
-    captureGlobalHookLogs: true;
-  };
+private opts = {} as {
+  outputDir: string;
+  outputFile: string;
+  outputFileStrategy: 'unique' | 'static';
+  logLevel: LogLevel;
+  captureLogs: boolean;
+  captureCommands: boolean;
+  environment: Partial<CtrfEnvironment>;
+  tags: string[];
+  testType: string;
+  metadata: Record<string, unknown>;
 
-  private report: CtrfReport;
-  private testMap = new Map<string, InternalTestState>();
-  private suiteMap = new Map<string, InternalSuiteState>();
-  private suiteCount = 0;
-  private currentSuite = '';
-  private currentSpecFile = '';
-  private runnerCid = '';
-  private runnerStartTime = 0;
-  private runnerEndTime = 0;
-  private globalAttachments: CtrfAttachment[] = [];
-  private currentGlobalHookBeingProcessed: CtrfHook | null = null;
-  private pendingBeforeEachHooks: CtrfHook[] = [];
-  private lastStartedTestState: InternalTestState | null = null;
-  /** Current destination for logs, owned by the reporter (test or hook). Used
-   *  both by the in-process log API (via shared.setLogSink) and by the
-   *  command-event handlers below, so attribution never depends on the service. */
-  private activeSink: ((entry: CtrfLogEntry) => void) | null = null;
+  includeHooks: true;
+  includeRetries: true;
+  markFlaky: true;
+  structureByHooks: true;
+  captureGlobalHookLogs: true;
+
+  transformTest?: (test: CtrfTest) => CtrfTest | null;
+  onComplete?: (report: CtrfReport, outputPath: string) => void | Promise<void>;
+};
+
+
+  private workerStates = new Map<string, WorkerState>();
 
   constructor(options: CtrfReporterOptions) {
     super(options);
@@ -100,23 +114,50 @@ export default class CtrfReporter extends WDIOReporter {
       transformTest: options.transformTest,
       onComplete: options.onComplete,
     };
-    this.report = this.createEmptyReport();
+  }
+
+  private getWorkerState(cid: string): WorkerState {
+    if (!this.workerStates.has(cid)) {
+      this.workerStates.set(cid, this.createWorkerState());
+    }
+    return this.workerStates.get(cid)!;
+  }
+
+  private createWorkerState(): WorkerState {
+    return {
+      report: this.createEmptyReport(),
+      testMap: new Map(),
+      suiteMap: new Map(),
+      suiteCount: 0,
+      currentSuite: '',
+      currentSpecFile: '',
+      runnerCid: '',
+      runnerStartTime: 0,
+      runnerEndTime: 0,
+      globalAttachments: [],
+      currentGlobalHookBeingProcessed: null,
+      pendingBeforeEachHooks: [],
+      lastStartedTestState: null,
+      activeSink: null,
+    };
   }
 
   onRunnerStart(runner: RunnerStats): void {
-    this.runnerStartTime = Date.now();
-    this.currentSpecFile = runner.specs?.[0] ?? '';
-    this.runnerCid = runner.cid ?? '';
-    shared.clearAll();
+    const cid = runner.cid ?? '';
+    const ws = this.getWorkerState(cid);
+    ws.runnerStartTime = Date.now();
+    ws.currentSpecFile = runner.specs?.[0] ?? '';
+    ws.runnerCid = cid;
+    shared.clearAll(cid);
 
-    this.report.tool = {
+    ws.report.tool = {
       name: 'wdio-appium-mocha-ts',
       version: runner.config?.framework ?? 'unknown',
     };
 
     const caps = runner.capabilities as Record<string, unknown> | undefined;
     if (caps) {
-      this.report.environment = {
+      ws.report.environment = {
         platformName: this.getCap(caps, 'platformName', 'platform') ?? 'unknown',
         platformVersion: this.getCap(caps, 'platformVersion', 'os_version') ?? 'unknown',
         deviceName: this.getCap(caps, 'deviceName', 'appium:deviceName', 'wdio:deviceName') ?? 'unknown',
@@ -131,74 +172,78 @@ export default class CtrfReporter extends WDIOReporter {
   }
 
   onSuiteStart(suite: SuiteStats): void {
-    this.currentSuite = suite.title;
-    this.routeLogsTo(null);
-    const state: InternalSuiteState = { 
+    const cid = suite.cid ?? '';
+    const ws = this.getWorkerState(cid);
+    ws.currentSuite = suite.title;
+    this.routeLogsTo(null, cid);
+    const state: InternalSuiteState = {
       hooks: [],
       globalHooks: [],
       globalHookLogs: [],
     };
-    this.suiteMap.set(suite.uid, state);
-    this.suiteMap.set(suite.title, state);
-    this.suiteCount += 1;
-    this.log('trace', `Suite started: ${suite.title}`);
+    ws.suiteMap.set(suite.uid, state);
+    ws.suiteMap.set(suite.title, state);
+    ws.suiteCount += 1;
+    this.log('trace', `Suite started: ${suite.title} (cid=${cid})`);
   }
 
   onTestStart(test: TestStats): void {
-    const key = this.getTestKey(test);
+    const cid = test.cid ?? '';
+    const ws = this.getWorkerState(cid);
+    const key = this.getTestKey(test, ws.currentSpecFile, ws.currentSuite);
     const now = Date.now();
 
-    if (this.testMap.has(key)) {
-      const state = this.testMap.get(key)!;
+    if (ws.testMap.has(key)) {
+      const state = ws.testMap.get(key)!;
       this.saveRetryAttempt(state, now);
       state.currentAttempt += 1;
       state.attemptLogs = [];
       state.attemptStartTime = now;
     } else {
-      this.createTestState(test, now);
+      this.createTestState(test, now, ws);
     }
 
-    this.attachPendingHooks(this.testMap.get(key)!);
+    this.attachPendingHooks(ws.testMap.get(key)!, ws);
 
     // The reporter owns log attribution: route logs emitted during this test
     // body directly into the test's state, independent of the service.
     if (this.opts.captureLogs) {
-      const state = this.testMap.get(key)!;
+      const state = ws.testMap.get(key)!;
       this.routeLogsTo((entry) => {
         state.logs.push(entry);
         state.attemptLogs.push(entry);
-      });
+      }, cid);
     }
 
-    this.log('trace', `Test started: ${test.title} (attempt ${this.testMap.get(key)!.currentAttempt})`);
+    this.log('trace', `Test started: ${test.title} (attempt ${ws.testMap.get(key)!.currentAttempt}, cid=${cid})`);
   }
 
   /** Assigns the beforeEach hooks that ran immediately before this test and
-   *  marks it as the target for the afterEach hooks that follow. */
-  private attachPendingHooks(state: InternalTestState): void {
-    if (this.pendingBeforeEachHooks.length > 0) {
-      state.hooks.push(...this.pendingBeforeEachHooks);
-      this.pendingBeforeEachHooks = [];
+   * marks it as the target for the afterEach hooks that follow. */
+  private attachPendingHooks(state: InternalTestState, ws: WorkerState): void {
+    if (ws.pendingBeforeEachHooks.length > 0) {
+      state.hooks.push(...ws.pendingBeforeEachHooks);
+      ws.pendingBeforeEachHooks = [];
     }
-    this.lastStartedTestState = state;
+    ws.lastStartedTestState = state;
   }
 
-  private createTestState(test: TestStats, now: number): InternalTestState {
-    const key = this.getTestKey(test);
+  private createTestState(test: TestStats, now: number, ws: WorkerState): InternalTestState {
+    const key = this.getTestKey(test, ws.currentSpecFile, ws.currentSuite);
     const ctrfTest: CtrfTest = {
       name: test.title,
       status: 'other',
       duration: 0,
       start: now,
       stop: now,
-      suite: this.currentSuite,
-      filepath: this.currentSpecFile,
+      suite: ws.currentSuite,
+      filepath: ws.currentSpecFile,
       tags: [...this.opts.tags],
       type: this.opts.testType,
       retries: 0,
       flaky: false,
       metadata: { ...this.opts.metadata },
-      ...this.extractDeviceInfo(),
+      ...this.extractDeviceInfo(ws),
     };
 
     const state: InternalTestState = {
@@ -210,7 +255,7 @@ export default class CtrfReporter extends WDIOReporter {
       attemptLogs: [],
       attemptStartTime: now,
     };
-    this.testMap.set(key, state);
+    ws.testMap.set(key, state);
     return state;
   }
 
@@ -233,8 +278,10 @@ export default class CtrfReporter extends WDIOReporter {
   }
 
   onTestEnd(test: TestStats): void {
-    const key = this.getTestKey(test);
-    const state = this.testMap.get(key);
+    const cid = test.cid ?? '';
+    const ws = this.getWorkerState(cid);
+    const key = this.getTestKey(test, ws.currentSpecFile, ws.currentSuite);
+    const state = ws.testMap.get(key);
     if (!state) return;
 
     if (state.ctrfTest.status === 'other') {
@@ -252,15 +299,15 @@ export default class CtrfReporter extends WDIOReporter {
 
     // Stop routing logs to this test; the following afterEach hook (if any)
     // sets its own sink in onHookStart.
-    this.routeLogsTo(null);
+    this.routeLogsTo(null, cid);
 
-    this.applySharedTestData(state, this.currentSuite, test.title);
+    this.applySharedTestData(state, state.ctrfTest.suite, test.title, cid);
   }
 
-  private applySharedTestData(state: InternalTestState, suite: string | undefined, title: string): void {
+  private applySharedTestData(state: InternalTestState, suite: string | undefined, title: string, cid: string): void {
     if (!suite) return;
 
-    const sharedData = shared.pullTestData(suite, title);
+    const sharedData = shared.pullTestData(suite, title, cid);
     if (sharedData.attachments.length > 0) {
       const normalizedAttachments = sharedData.attachments.map((attachment) => {
         if (!attachment.path) return attachment;
@@ -275,7 +322,8 @@ export default class CtrfReporter extends WDIOReporter {
         state.ctrfTest.attachments = [...(state.ctrfTest.attachments ?? []), ...screenshotAttachments];
       }
       if (nonScreenshotAttachments.length > 0) {
-        this.globalAttachments.push(...nonScreenshotAttachments);
+        const ws = this.getWorkerState(cid);
+        ws.globalAttachments.push(...nonScreenshotAttachments);
       }
     }
 
@@ -292,6 +340,9 @@ export default class CtrfReporter extends WDIOReporter {
 
   onHookStart(hook: HookStats): void {
     if (!this.opts.includeHooks) return;
+    const cid = hook.cid ?? '';
+    const ws = this.getWorkerState(cid);
+
     const hookData: CtrfHook = {
       type: this.classifyHook(hook.title),
       title: hook.title,
@@ -300,19 +351,19 @@ export default class CtrfReporter extends WDIOReporter {
       start: Date.now(),
       stop: Date.now(),
     };
-    
+
     // Global (before/after all) hooks are tracked at the suite level.
     // Test-level (beforeEach/afterEach) hooks are attributed to individual
     // tests in onHookEnd to avoid accumulating across the whole suite.
     if (hookData.type === 'before' || hookData.type === 'after') {
-      const suiteState = this.suiteMap.get(hook.parent) ?? this.suiteMap.get(this.currentSuite);
+      const suiteState = ws.suiteMap.get(hook.parent) ?? ws.suiteMap.get(ws.currentSuite);
       if (suiteState) {
         suiteState.globalHooks.push(hookData);
       }
-      this.currentGlobalHookBeingProcessed = hookData; // Track for log capture
+      ws.currentGlobalHookBeingProcessed = hookData; // Track for log capture
 
       if (this.opts.captureGlobalHookLogs) {
-        shared.setActiveGlobalHook(this.currentSuite, hookData.title);
+        shared.setActiveGlobalHook(ws.currentSuite, hookData.title, cid);
       }
     }
 
@@ -321,25 +372,28 @@ export default class CtrfReporter extends WDIOReporter {
     if (this.opts.captureLogs) {
       this.routeLogsTo((entry) => {
         (hookData.logs ??= []).push(entry);
-      });
+      }, cid);
     }
 
-    (hook as unknown as Record<string, unknown>)._ctrfHook = hookData;
+    (hook as unknown as Record<string, any>)._ctrfHook = hookData;
   }
 
   onHookEnd(hook: HookStats): void {
     if (!this.opts.includeHooks) return;
-    const ctrfHook = (hook as unknown as Record<string, unknown>)._ctrfHook as CtrfHook | undefined;
+    const cid = hook.cid ?? '';
+    const ws = this.getWorkerState(cid);
+    const ctrfHook = (hook as unknown as Record<string, any>)._ctrfHook as CtrfHook | undefined;
+
     if (ctrfHook) {
       ctrfHook.stop = Date.now();
       ctrfHook.duration = ctrfHook.stop - ctrfHook.start;
 
       // Stop routing logs to this hook now that its body has finished.
-      this.routeLogsTo(null);
+      this.routeLogsTo(null, cid);
 
       // WDIO surfaces hook failures inconsistently: sometimes via `error`,
       // sometimes via an `errors[]` array, and sometimes only via `state`.
-      const hookRecord = hook as unknown as Record<string, unknown>;
+      const hookRecord = hook as unknown as Record<string, any>;
       const errorList = hookRecord.errors;
       const hookError = hook.error
         ?? (Array.isArray(errorList) && errorList.length > 0 ? (errorList[0] as Error) : undefined);
@@ -356,11 +410,11 @@ export default class CtrfReporter extends WDIOReporter {
           message: hookError.message,
         });
       }
-      
+
       // Capture attachments (e.g. failure screenshots) from global hooks. Logs
       // are already attached to `ctrfHook.logs` via the reporter log sink.
       if (this.opts.captureGlobalHookLogs && (ctrfHook.type === 'before' || ctrfHook.type === 'after')) {
-        const clearResult = shared.clearActiveGlobalHook();
+        const clearResult = shared.clearActiveGlobalHook(cid);
         if (clearResult) {
           if (clearResult.logs.length > 0) {
             ctrfHook.logs = [...(ctrfHook.logs ?? []), ...clearResult.logs];
@@ -374,52 +428,79 @@ export default class CtrfReporter extends WDIOReporter {
         }
       } else if (ctrfHook.type === 'beforeEach') {
         // Attribute to the next test that starts.
-        this.pendingBeforeEachHooks.push(ctrfHook);
+        ws.pendingBeforeEachHooks.push(ctrfHook);
       } else if (ctrfHook.type === 'afterEach') {
         // Attribute to the test that just ran.
-        if (this.lastStartedTestState) {
-          this.lastStartedTestState.hooks.push(ctrfHook);
+        if (ws.lastStartedTestState) {
+          ws.lastStartedTestState.hooks.push(ctrfHook);
         } else {
-          this.pendingBeforeEachHooks.push(ctrfHook);
+          ws.pendingBeforeEachHooks.push(ctrfHook);
         }
       }
-      
+
       // Clear the current global hook reference after processing
-      if (this.currentGlobalHookBeingProcessed === ctrfHook) {
-        this.currentGlobalHookBeingProcessed = null;
+      if (ws.currentGlobalHookBeingProcessed === ctrfHook) {
+        ws.currentGlobalHookBeingProcessed = null;
       }
     }
   }
 
-  onRunnerEnd(_runner: RunnerStats): void {
-    this.runnerEndTime = Date.now();
-    this.buildReport();
-    this.writeReport();
+  onRunnerEnd(runner: RunnerStats): void {
+    const cid = runner.cid ?? '';
+    const ws = this.getWorkerState(cid);
+    ws.runnerEndTime = Date.now();
+    this.buildReport(ws, cid);
+    this.writeReport(ws);
   }
 
   /** Single owner of log attribution. Points both the in-process log API
-   *  (shared.setLogSink, used by browser.ctrf.log / CommonUtil.log) and the
-   *  command-event handlers at the same test/hook target. */
-  private routeLogsTo(sink: ((entry: CtrfLogEntry) => void) | null): void {
-    this.activeSink = sink;
-    shared.setLogSink(sink);
+   * (shared.setLogSink, used by browser.ctrf.log / CommonUtil.log) and the
+   * command-event handlers at the same test/hook target. */
+  private routeLogsTo(sink: ((entry: CtrfLogEntry) => void) | null, cid: string): void {
+    const ws = this.getWorkerState(cid);
+    ws.activeSink = sink;
+    shared.setLogSink(sink, cid);
   }
 
   /** WDIO emits this for every WebDriver/Appium command in-process, correctly
-   *  ordered relative to test/hook events. We turn the meaningful ones into
-   *  human-readable log lines so a test always has an activity trail — even
-   *  when the optional service is not loaded and no manual logs are written. */
+   * ordered relative to test/hook events. We turn the meaningful ones into
+   * human-readable log lines so a test always has an activity trail — even
+   * when the optional service is not loaded and no manual logs are written. */
   onBeforeCommand(command: BeforeCommandArgs): void {
-    if (!this.opts.captureCommands || !this.activeSink) return;
+    if (!this.opts.captureCommands) return;
+
+    // Extract cid from the command payload. WDIO includes this at runtime
+    // even if the TypeScript types do not declare it.
+    let cid = (command as any).cid as string | undefined;
+
+    if (!cid) {
+      // Fallback: if exactly one worker has an active sink, attribute to it.
+      // This handles WDIO versions where BeforeCommandArgs does not include cid.
+      const active = Array.from(this.workerStates.entries())
+        .filter(([_, ws]) => ws.activeSink !== null)
+        .map(([c, _]) => c);
+      if (active.length === 1) {
+        cid = active[0];
+      } else if (active.length > 1) {
+        this.log('trace', 'Skipping command log: multiple active workers, cannot attribute command without cid');
+        return;
+      } else {
+        return;
+      }
+    }
+
+    const ws = this.workerStates.get(cid);
+    if (!ws || !ws.activeSink) return;
+
     const message = this.describeCommand(command.method, command.endpoint, command.body);
     if (message) {
-      this.activeSink({ timestamp: Date.now(), level: 'debug', message });
+      ws.activeSink({ timestamp: Date.now(), level: 'debug', message });
     }
   }
 
   /** Translate a raw WebDriver/Appium request into a readable action label.
-   *  Returns null for noisy, non-actionable commands (element lookups, polling,
-   *  attribute/state reads). Never includes typed text (may be a password). */
+   * Returns null for noisy, non-actionable commands (element lookups, polling,
+   * attribute/state reads). Never includes typed text (may be a password). */
   private describeCommand(method: string | undefined, endpoint: string | undefined, body: unknown): string | null {
     if (!endpoint) return null;
     const b = (body ?? {}) as Record<string, unknown>;
@@ -468,10 +549,9 @@ export default class CtrfReporter extends WDIOReporter {
     };
   }
 
-  private getTestKey(test: TestStats): string {
-    const suite = test.parent ?? this.currentSuite;
-    const file = this.currentSpecFile;
-    return `${file}::${suite}::${test.title}`;
+  private getTestKey(test: TestStats, file: string, suite: string): string {
+    const testSuite = test.parent ?? suite;
+    return `${file}::${testSuite}::${test.title}`;
   }
 
   private saveRetryAttempt(state: InternalTestState, now: number): void {
@@ -489,13 +569,16 @@ export default class CtrfReporter extends WDIOReporter {
   }
 
   private finalizeTest(test: TestStats, status: CtrfTest['status']): void {
-    const key = this.getTestKey(test);
+    const cid = test.cid ?? '';
+    const ws = this.getWorkerState(cid);
+    const key = this.getTestKey(test, ws.currentSpecFile, ws.currentSuite);
+
     // Tests skipped via `it.skip` / `this.skip()` never fire onTestStart,
     // so create their state here to ensure they appear in the report.
-    let state = this.testMap.get(key);
+    let state = ws.testMap.get(key);
     if (!state) {
-      state = this.createTestState(test, Date.now());
-      this.attachPendingHooks(state);
+      state = this.createTestState(test, Date.now(), ws);
+      this.attachPendingHooks(state, ws);
     }
 
     const now = Date.now();
@@ -520,7 +603,7 @@ export default class CtrfReporter extends WDIOReporter {
     }
   }
 
-  private buildReport(): void {
+  private buildReport(ws: WorkerState, cid: string): void {
     const tests: CtrfTest[] = [];
     let passed = 0;
     let failed = 0;
@@ -530,14 +613,14 @@ export default class CtrfReporter extends WDIOReporter {
     let flaky = 0;
 
     if (this.opts.includeHooks) {
-      this.applyRecordedGlobalHookFailures();
+      this.applyRecordedGlobalHookFailures(ws, cid);
     }
 
-    for (const state of this.testMap.values()) {
+    for (const state of ws.testMap.values()) {
       // In parallel runs, reporter `onTestEnd` can fire before service
       // `afterTest` archives active test logs/attachments. Pull again at build
       // time, using the stored suite/name, after service hooks have run.
-      this.applySharedTestData(state, state.ctrfTest.suite, state.ctrfTest.name);
+      this.applySharedTestData(state, state.ctrfTest.suite, state.ctrfTest.name, cid);
 
       if (this.opts.includeHooks) {
         state.ctrfTest.hooks = state.hooks.length > 0 ? [...state.hooks] : undefined;
@@ -546,7 +629,7 @@ export default class CtrfReporter extends WDIOReporter {
         // service is the source of truth. Consumed in execution order.
         if (state.ctrfTest.hooks) {
           for (const hook of state.ctrfTest.hooks) {
-            this.applyRecordedHookFailure(hook, false);
+            this.applyRecordedHookFailure(hook, false, cid);
           }
         }
       }
@@ -584,33 +667,33 @@ export default class CtrfReporter extends WDIOReporter {
       }
     }
 
-    this.report.summary = {
+    ws.report.summary = {
       tests: tests.length,
       passed,
       failed,
       pending,
       skipped,
       other,
-      start: this.runnerStartTime,
-      stop: this.runnerEndTime,
-      duration: this.runnerEndTime - this.runnerStartTime,
-      suites: this.suiteCount,
+      start: ws.runnerStartTime,
+      stop: ws.runnerEndTime,
+      duration: ws.runnerEndTime - ws.runnerStartTime,
+      suites: ws.suiteCount,
       flaky,
     };
-    
+
     // Build hierarchical structure if structureByHooks is enabled
     if (this.opts.structureByHooks) {
-      this.report.suite = this.buildSuiteHierarchy(tests);
-      delete this.report.tests;
+      ws.report.suite = this.buildSuiteHierarchy(tests, ws);
+      delete ws.report.tests;
     } else {
-      this.report.tests = tests;
+      ws.report.tests = tests;
     }
-    
+
     // Merge per-test global attachments with session-level attachments
     // (e.g. appium.log) captured by the service, de-duplicating by content.
-    const sessionAttachments = shared.pullGlobalAttachments().map((att) => this.normalizeAttachment(att));
-    const combinedAttachments = this.dedupeAttachments([...this.globalAttachments, ...sessionAttachments]);
-    this.report.attachments = combinedAttachments.length > 0 ? combinedAttachments : undefined;
+    const sessionAttachments = shared.pullGlobalAttachments(cid).map((att) => this.normalizeAttachment(att));
+    const combinedAttachments = this.dedupeAttachments([...ws.globalAttachments, ...sessionAttachments]);
+    ws.report.attachments = combinedAttachments.length > 0 ? combinedAttachments : undefined;
   }
 
   /**
@@ -620,13 +703,13 @@ export default class CtrfReporter extends WDIOReporter {
    * the error. Failures are consumed FIFO from per-type queues so they align
    * with execution order.
    */
-  private applyRecordedHookFailure(hook: CtrfHook, allowUnknownFallback: boolean): void {
-    let result = shared.takeHookResult(hook.type ?? 'unknown');
+  private applyRecordedHookFailure(hook: CtrfHook, allowUnknownFallback: boolean, cid: string): void {
+    let result = shared.takeHookResult(hook.type ?? 'unknown', cid);
     if (!result && allowUnknownFallback) {
-      result = shared.takeHookResult('unknown');
+      result = shared.takeHookResult('unknown', cid);
     }
     if (!result && allowUnknownFallback) {
-      result = shared.takeAnyHookResult();
+      result = shared.takeAnyHookResult(cid);
     }
     if (!result) return;
     if (result.failed) {
@@ -640,10 +723,10 @@ export default class CtrfReporter extends WDIOReporter {
     }
   }
 
-  private applyRecordedGlobalHookFailures(): void {
-    for (const suiteState of this.suiteMap.values()) {
+  private applyRecordedGlobalHookFailures(ws: WorkerState, cid: string): void {
+    for (const suiteState of ws.suiteMap.values()) {
       for (const globalHook of suiteState.globalHooks) {
-        this.applyRecordedHookFailure(globalHook, true);
+        this.applyRecordedHookFailure(globalHook, true, cid);
       }
     }
   }
@@ -667,55 +750,55 @@ export default class CtrfReporter extends WDIOReporter {
     return result;
   }
 
-  private buildSuiteHierarchy(tests: CtrfTest[]): CtrfSuite[] {
+  private buildSuiteHierarchy(tests: CtrfTest[], ws: WorkerState): CtrfSuite[] {
     // Group tests by suite and filepath
     const suiteHierarchyMap = new Map<string, { suite: CtrfSuite; tests: CtrfTest[] }>();
-    
+
     for (const test of tests) {
       const suite = test.suite ?? 'default';
       const filepath = test.filepath ?? 'unknown';
       const key = `${filepath}::${suite}`;
-      
+
       if (!suiteHierarchyMap.has(key)) {
-        const suiteState = this.suiteMap.get(suite);
+        const suiteState = ws.suiteMap.get(suite);
         const ctrfSuite: CtrfSuite = {
           name: suite,
           filepath,
           tests: [],
         };
-        
+
         // Add global hooks if present
         if (this.opts.includeHooks && suiteState && suiteState.globalHooks.length > 0) {
           ctrfSuite.globalHooks = suiteState.globalHooks;
         }
-        
+
         suiteHierarchyMap.set(key, { suite: ctrfSuite, tests: [] });
       }
-      
+
       suiteHierarchyMap.get(key)!.tests.push(test);
     }
-    
+
     // Convert to array with tests assigned
     const suites: CtrfSuite[] = [];
     for (const { suite, tests: suiteTests } of suiteHierarchyMap.values()) {
       suite.tests = suiteTests;
       suites.push(suite);
     }
-    
+
     return suites;
   }
 
-  private writeReport(): void {
+  private writeReport(ws: WorkerState): void {
     const outputDir = path.resolve(this.opts.outputDir);
-    const outputPath = this.resolveOutputPath(outputDir);
+    const outputPath = this.resolveOutputPath(outputDir, ws);
     try {
       if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
       const tmpPath = `${outputPath}.${process.pid}.${Date.now()}.tmp`;
-      fs.writeFileSync(tmpPath, JSON.stringify(this.report, null, 2), 'utf-8');
+      fs.writeFileSync(tmpPath, JSON.stringify(ws.report, null, 2), 'utf-8');
       fs.renameSync(tmpPath, outputPath);
       this.log('info', `CTRF report written to: ${outputPath}`);
       if (this.opts.onComplete) {
-        Promise.resolve(this.opts.onComplete(this.report, outputPath)).catch((err) => {
+        Promise.resolve(this.opts.onComplete(ws.report, outputPath)).catch((err) => {
           this.log('error', `onComplete error: ${(err as Error).message}`);
         });
       }
@@ -725,7 +808,7 @@ export default class CtrfReporter extends WDIOReporter {
     }
   }
 
-  private resolveOutputPath(outputDir: string): string {
+  private resolveOutputPath(outputDir: string, ws: WorkerState): string {
     if (this.opts.outputFileStrategy === 'static') {
       return path.join(outputDir, this.opts.outputFile);
     }
@@ -733,10 +816,10 @@ export default class CtrfReporter extends WDIOReporter {
     const parsed = path.parse(this.opts.outputFile);
     const baseName = parsed.name || 'wdio-ctrf-report';
     const extension = parsed.ext || '.json';
-    const specName = this.currentSpecFile
-      ? path.basename(this.currentSpecFile, path.extname(this.currentSpecFile))
+    const specName = ws.currentSpecFile
+      ? path.basename(ws.currentSpecFile, path.extname(ws.currentSpecFile))
       : 'worker';
-    const parts = [baseName, this.runnerCid, specName, String(process.pid), String(this.runnerStartTime)]
+    const parts = [baseName, ws.runnerCid, specName, String(process.pid), String(ws.runnerStartTime)]
       .filter(Boolean)
       .map((part) => this.safeFilePart(part));
 
@@ -754,8 +837,8 @@ export default class CtrfReporter extends WDIOReporter {
     return undefined;
   }
 
-  private extractDeviceInfo(): Pick<CtrfTest, 'platform' | 'device' | 'browser' | 'appVersion'> {
-    const env = this.report.environment;
+  private extractDeviceInfo(ws: WorkerState): Pick<CtrfTest, 'platform' | 'device' | 'browser' | 'appVersion'> {
+    const env = ws.report.environment;
     return {
       platform: env?.platformName,
       device: env?.deviceName,
