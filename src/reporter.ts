@@ -78,6 +78,11 @@ export default class CtrfReporter extends WDIOReporter {
    *  both by the in-process log API (via shared.setLogSink) and by the
    *  command-event handlers below, so attribution never depends on the service. */
   private activeSink: ((entry: CtrfLogEntry) => void) | null = null;
+  /** WDIO can emit test and hook lifecycle events in an order where ending a
+   * hook happens after the test sink was installed. Keep explicit owners so a
+   * completed hook restores command/manual-log attribution to its test. */
+  private activeTestForLogs: InternalTestState | null = null;
+  private activeHookForLogs: CtrfHook | null = null;
 
   constructor(options: CtrfReporterOptions) {
     super(options);
@@ -165,10 +170,8 @@ export default class CtrfReporter extends WDIOReporter {
     // body directly into the test's state, independent of the service.
     if (this.opts.captureLogs) {
       const state = this.testMap.get(key)!;
-      this.routeLogsTo((entry) => {
-        state.logs.push(entry);
-        state.attemptLogs.push(entry);
-      });
+      this.activeTestForLogs = state;
+      this.routeLogsToTest(state);
     }
 
     this.log('trace', `Test started: ${test.title} (attempt ${this.testMap.get(key)!.currentAttempt})`);
@@ -253,6 +256,7 @@ export default class CtrfReporter extends WDIOReporter {
 
     // Stop routing logs to this test; the following afterEach hook (if any)
     // sets its own sink in onHookStart.
+    if (this.activeTestForLogs === state) this.activeTestForLogs = null;
     this.routeLogsTo(null);
 
     this.applySharedTestData(state, this.currentSuite, test.title);
@@ -320,6 +324,7 @@ export default class CtrfReporter extends WDIOReporter {
     // Route logs emitted during this hook body straight to the hook, regardless
     // of hook type. Works with or without the service loaded.
     if (this.opts.captureLogs) {
+      this.activeHookForLogs = hookData;
       this.routeLogsTo((entry) => {
         (hookData.logs ??= []).push(entry);
       });
@@ -335,8 +340,15 @@ export default class CtrfReporter extends WDIOReporter {
       ctrfHook.stop = Date.now();
       ctrfHook.duration = ctrfHook.stop - ctrfHook.start;
 
-      // Stop routing logs to this hook now that its body has finished.
-      this.routeLogsTo(null);
+      // Restore the current test after a hook. WDIO can report a hook ending
+      // after it has already reported `test:start`; clearing unconditionally
+      // here previously made every subsequent test command disappear.
+      if (this.activeHookForLogs === ctrfHook) this.activeHookForLogs = null;
+      if (this.activeTestForLogs) {
+        this.routeLogsToTest(this.activeTestForLogs);
+      } else {
+        this.routeLogsTo(null);
+      }
 
       // WDIO surfaces hook failures inconsistently: sometimes via `error`,
       // sometimes via an `errors[]` array, and sometimes only via `state`.
@@ -404,6 +416,13 @@ export default class CtrfReporter extends WDIOReporter {
   private routeLogsTo(sink: ((entry: CtrfLogEntry) => void) | null): void {
     this.activeSink = sink;
     shared.setLogSink(sink, this.runnerCid);
+  }
+
+  private routeLogsToTest(state: InternalTestState): void {
+    this.routeLogsTo((entry) => {
+      state.logs.push(entry);
+      state.attemptLogs.push(entry);
+    });
   }
 
   /** WDIO emits this for every WebDriver/Appium command in-process, correctly
