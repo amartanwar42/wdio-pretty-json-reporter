@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { CtrfServiceOptions, CtrfAttachment } from './types';
 import * as shared from './shared-state';
-import { attach } from './api';
+import { attach, createAttachApi } from './api';
 
 type BrowserWithWdioCommands = WebdriverIO.Browser & {
   saveScreenshot(filepath: string): Promise<unknown>;
@@ -44,6 +44,9 @@ type ResolvedCtrfServiceOptions = {
 
 export default class CtrfService implements Services.ServiceInstance {
   private opts: ResolvedCtrfServiceOptions;
+  /** Capability ID for this WDIO worker. Every shared-state call must use it. */
+  private cid = '';
+  private attachApi = attach;
 
   constructor(serviceOptions: CtrfServiceOptions) {
     this.opts = {
@@ -68,6 +71,17 @@ export default class CtrfService implements Services.ServiceInstance {
     };
   }
 
+  beforeSession(
+    _config: Parameters<NonNullable<Services.ServiceInstance['beforeSession']>>[0],
+    _capabilities: Parameters<NonNullable<Services.ServiceInstance['beforeSession']>>[1],
+    _specs: Parameters<NonNullable<Services.ServiceInstance['beforeSession']>>[2],
+    cid: string,
+  ): void {
+    this.cid = cid;
+    shared.setCurrentWorkerCid(cid);
+    this.attachApi = createAttachApi(cid);
+  }
+
   async before(): Promise<void> {
     // Ensure screenshot directory exists
     if (this.opts.screenshot.enabled) {
@@ -80,29 +94,29 @@ export default class CtrfService implements Services.ServiceInstance {
     // Expose browser.ctrf API
     (browser as any).ctrf = {
       attach: {
-        screenshot: (p: string, n?: string) => attach.screenshot(p, n),
-        video: (p: string, n?: string) => attach.video(p, n),
-        logFile: (p: string, n?: string) => attach.logFile(p, n),
-        text: (n: string, c: string) => attach.text(n, c),
-        json: (n: string, d: unknown) => attach.json(n, d),
-        html: (n: string, c: string) => attach.html(n, c),
-        appiumLog: (p: string) => attach.appiumLog(p),
-        networkHar: (p: string) => attach.networkHar(p),
-        file: (n: string, p: string, t: string, c?: CtrfAttachment['category']) => attach.file(n, p, t, c),
-        custom: (a: Omit<CtrfAttachment, 'timestamp'>) => attach.custom(a),
+        screenshot: (p: string, n?: string) => this.attachApi.screenshot(p, n),
+        video: (p: string, n?: string) => this.attachApi.video(p, n),
+        logFile: (p: string, n?: string) => this.attachApi.logFile(p, n),
+        text: (n: string, c: string) => this.attachApi.text(n, c),
+        json: (n: string, d: unknown) => this.attachApi.json(n, d),
+        html: (n: string, c: string) => this.attachApi.html(n, c),
+        appiumLog: (p: string) => this.attachApi.appiumLog(p),
+        networkHar: (p: string) => this.attachApi.networkHar(p),
+        file: (n: string, p: string, t: string, c?: CtrfAttachment['category']) => this.attachApi.file(n, p, t, c),
+        custom: (a: Omit<CtrfAttachment, 'timestamp'>) => this.attachApi.custom(a),
       },
       log: {
-        trace: (m: string) => shared.addLog('trace', m),
-        debug: (m: string) => shared.addLog('debug', m),
-        info: (m: string) => shared.addLog('info', m),
-        warn: (m: string) => shared.addLog('warn', m),
-        error: (m: string) => shared.addLog('error', m),
+        trace: (m: string) => shared.addLog('trace', m, this.cid),
+        debug: (m: string) => shared.addLog('debug', m, this.cid),
+        info: (m: string) => shared.addLog('info', m, this.cid),
+        warn: (m: string) => shared.addLog('warn', m, this.cid),
+        error: (m: string) => shared.addLog('error', m, this.cid),
       },
     };
   }
 
   beforeTest(test: { parent: string; title: string }): void {
-    shared.setActiveTest(test.parent, test.title);
+    shared.setActiveTest(test.parent, test.title, this.cid);
   }
 
   async afterHook(
@@ -120,7 +134,7 @@ export default class CtrfService implements Services.ServiceInstance {
     if (result?.passed !== false) return;
 
     const type = classifyHookType(hookName ?? test?.title ?? test?.parent ?? '');
-    shared.recordHookFailure(type, result.error);
+    shared.recordHookFailure(type, result.error, this.cid);
 
     if (this.opts.screenshot.enabled) {
       const fileName = `hook_failure_${Date.now()}.png`;
@@ -133,9 +147,9 @@ export default class CtrfService implements Services.ServiceInstance {
           type: 'image/png',
           category: 'screenshot',
           timestamp: Date.now(),
-        });
+        }, this.cid);
       } catch (e) {
-        shared.addLog('warn', `Failed to capture hook screenshot: ${(e as Error).message}`);
+        shared.addLog('warn', `Failed to capture hook screenshot: ${(e as Error).message}`, this.cid);
       }
     }
 
@@ -148,9 +162,9 @@ export default class CtrfService implements Services.ServiceInstance {
           type: 'text/html',
           category: 'trace',
           timestamp: Date.now(),
-        });
+        }, this.cid);
       } catch (e) {
-        shared.addLog('warn', `Failed to capture hook page source: ${(e as Error).message}`);
+        shared.addLog('warn', `Failed to capture hook page source: ${(e as Error).message}`, this.cid);
       }
     }
   }
@@ -171,9 +185,9 @@ export default class CtrfService implements Services.ServiceInstance {
         const screenshotPath = path.resolve(this.opts.screenshot.path, fileName);
         try {
           await browser.saveScreenshot(screenshotPath);
-          attach.screenshot(screenshotPath, fileName.replace(/\.png$/, ''));
+          this.attachApi.screenshot(screenshotPath, fileName.replace(/\.png$/, ''));
         } catch (e) {
-          shared.addLog('warn', `Failed to capture screenshot: ${(e as Error).message}`);
+          shared.addLog('warn', `Failed to capture screenshot: ${(e as Error).message}`, this.cid);
         }
       }
     }
@@ -183,15 +197,15 @@ export default class CtrfService implements Services.ServiceInstance {
       if (!this.opts.pageSource.onFailureOnly || failed) {
         try {
           const source = await browser.getPageSource();
-          attach.html('page-source.html', source);
+          this.attachApi.html('page-source.html', source);
         } catch (e) {
-          shared.addLog('warn', `Failed to capture page source: ${(e as Error).message}`);
+          shared.addLog('warn', `Failed to capture page source: ${(e as Error).message}`, this.cid);
         }
       }
     }
 
     // Archive for reporter
-    shared.clearActiveTest();
+    shared.clearActiveTest(this.cid);
   }
 
   /**
@@ -209,7 +223,7 @@ export default class CtrfService implements Services.ServiceInstance {
           type: 'text/plain',
           category: 'log',
           timestamp: Date.now(),
-        });
+        }, this.cid);
       }
     }
 
@@ -220,7 +234,7 @@ export default class CtrfService implements Services.ServiceInstance {
         type: 'text/plain',
         category: 'trace',
         timestamp: Date.now(),
-      });
+      }, this.cid);
     }
 
     if (this.opts.networkHarPath && fs.existsSync(this.opts.networkHarPath)) {
@@ -230,7 +244,7 @@ export default class CtrfService implements Services.ServiceInstance {
         type: 'application/json',
         category: 'network',
         timestamp: Date.now(),
-      });
+      }, this.cid);
     }
   }
 

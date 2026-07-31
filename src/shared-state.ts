@@ -24,8 +24,17 @@ interface ActiveGlobalHookState {
 }
 
 const DEFAULT_CID = '__default__';
+let currentWorkerCid = DEFAULT_CID;
+
+/** Bind API calls that do not receive a CID (the exported `ctrf` helper) to
+ * the current WDIO worker. Each WDIO worker has its own process, so this keeps
+ * the existing public API while ensuring reporter and service use one bucket. */
+export function setCurrentWorkerCid(cid?: string): void {
+  currentWorkerCid = cid || DEFAULT_CID;
+}
+
 function resolveCid(cid?: string): string {
-  return cid || DEFAULT_CID;
+  return cid || currentWorkerCid;
 }
 
 function getOrCreate<K, V>(map: Map<K, V>, key: K, factory: () => V): V {
@@ -50,8 +59,13 @@ const activeGlobalHooks = new Map<string, ActiveGlobalHookState | null>();
  */
 const logSinks = new Map<string, ((entry: CtrfLogEntry) => void) | null>();
 
-/** All attachments/logs keyed by suite::test for reporter pickup, nested by cid */
-const archives = new Map<string, Map<string, { attachments: CtrfAttachment[]; logs: CtrfLogEntry[] }>>();
+/**
+ * Completed test data, nested by worker CID.  A queue is deliberately used for
+ * each suite/title key: retries and distinct tests may legitimately have the
+ * same display name.  A single value here used to let the later completion
+ * overwrite the earlier one's attachments and logs.
+ */
+const archives = new Map<string, Map<string, Array<{ attachments: CtrfAttachment[]; logs: CtrfLogEntry[] }>>>();
 
 /** Global hook logs keyed by suite::hookTitle for reporter pickup, nested by cid */
 const globalHookLogs = new Map<string, Map<string, CtrfLogEntry[]>>();
@@ -91,7 +105,9 @@ export function clearActiveTest(cid?: string): { suite: string; test: string; at
   if (copy) {
     const archiveKey = `${copy.suite}::${copy.test}`;
     const archive = getOrCreate(archives, key, () => new Map());
-    archive.set(archiveKey, { attachments: copy.attachments, logs: copy.logs });
+    const queue = archive.get(archiveKey) ?? [];
+    queue.push({ attachments: copy.attachments, logs: copy.logs });
+    archive.set(archiveKey, queue);
   }
   activeTests.set(key, null);
   return copy;
@@ -181,8 +197,9 @@ export function pullTestData(suite: string, test: string, cid?: string): { attac
   const key = resolveCid(cid);
   const archive = archives.get(key);
   const dataKey = `${suite}::${test}`;
-  const data = archive?.get(dataKey) ?? { attachments: [], logs: [] };
-  archive?.delete(dataKey);
+  const queue = archive?.get(dataKey);
+  const data = queue?.shift() ?? { attachments: [], logs: [] };
+  if (queue && queue.length === 0) archive?.delete(dataKey);
   return data;
 }
 

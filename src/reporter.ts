@@ -107,7 +107,8 @@ export default class CtrfReporter extends WDIOReporter {
     this.runnerStartTime = Date.now();
     this.currentSpecFile = runner.specs?.[0] ?? '';
     this.runnerCid = runner.cid ?? '';
-    shared.clearAll();
+    shared.setCurrentWorkerCid(this.runnerCid);
+    shared.clearAll(this.runnerCid);
 
     this.report.tool = {
       name: 'wdio-appium-mocha-ts',
@@ -260,7 +261,7 @@ export default class CtrfReporter extends WDIOReporter {
   private applySharedTestData(state: InternalTestState, suite: string | undefined, title: string): void {
     if (!suite) return;
 
-    const sharedData = shared.pullTestData(suite, title);
+    const sharedData = shared.pullTestData(suite, title, this.runnerCid);
     if (sharedData.attachments.length > 0) {
       const normalizedAttachments = sharedData.attachments.map((attachment) => {
         if (!attachment.path) return attachment;
@@ -312,7 +313,7 @@ export default class CtrfReporter extends WDIOReporter {
       this.currentGlobalHookBeingProcessed = hookData; // Track for log capture
 
       if (this.opts.captureGlobalHookLogs) {
-        shared.setActiveGlobalHook(this.currentSuite, hookData.title);
+        shared.setActiveGlobalHook(this.currentSuite, hookData.title, this.runnerCid);
       }
     }
 
@@ -360,7 +361,7 @@ export default class CtrfReporter extends WDIOReporter {
       // Capture attachments (e.g. failure screenshots) from global hooks. Logs
       // are already attached to `ctrfHook.logs` via the reporter log sink.
       if (this.opts.captureGlobalHookLogs && (ctrfHook.type === 'before' || ctrfHook.type === 'after')) {
-        const clearResult = shared.clearActiveGlobalHook();
+        const clearResult = shared.clearActiveGlobalHook(this.runnerCid);
         if (clearResult) {
           if (clearResult.logs.length > 0) {
             ctrfHook.logs = [...(ctrfHook.logs ?? []), ...clearResult.logs];
@@ -402,7 +403,7 @@ export default class CtrfReporter extends WDIOReporter {
    *  command-event handlers at the same test/hook target. */
   private routeLogsTo(sink: ((entry: CtrfLogEntry) => void) | null): void {
     this.activeSink = sink;
-    shared.setLogSink(sink);
+    shared.setLogSink(sink, this.runnerCid);
   }
 
   /** WDIO emits this for every WebDriver/Appium command in-process, correctly
@@ -608,7 +609,7 @@ export default class CtrfReporter extends WDIOReporter {
     
     // Merge per-test global attachments with session-level attachments
     // (e.g. appium.log) captured by the service, de-duplicating by content.
-    const sessionAttachments = shared.pullGlobalAttachments().map((att) => this.normalizeAttachment(att));
+    const sessionAttachments = shared.pullGlobalAttachments(this.runnerCid).map((att) => this.normalizeAttachment(att));
     const combinedAttachments = this.dedupeAttachments([...this.globalAttachments, ...sessionAttachments]);
     this.report.attachments = combinedAttachments.length > 0 ? combinedAttachments : undefined;
   }
@@ -621,12 +622,12 @@ export default class CtrfReporter extends WDIOReporter {
    * with execution order.
    */
   private applyRecordedHookFailure(hook: CtrfHook, allowUnknownFallback: boolean): void {
-    let result = shared.takeHookResult(hook.type ?? 'unknown');
+    let result = shared.takeHookResult(hook.type ?? 'unknown', this.runnerCid);
     if (!result && allowUnknownFallback) {
-      result = shared.takeHookResult('unknown');
+      result = shared.takeHookResult('unknown', this.runnerCid);
     }
     if (!result && allowUnknownFallback) {
-      result = shared.takeAnyHookResult();
+      result = shared.takeAnyHookResult(this.runnerCid);
     }
     if (!result) return;
     if (result.failed) {
