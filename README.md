@@ -109,7 +109,8 @@ This creates `./wdio-pretty-json-merged/wdio-ctrf-report.json` and copies non-JS
 | `outputFile` | `string` | `wdio-ctrf-report.json` | Report filename |
 | `outputFileStrategy` | `'unique' \| 'static'` | `'unique'` | Use unique per-worker files to avoid overwrites in parallel runs. Set to `'static'` only when a single worker should write one fixed filename |
 | `logLevel` | `string` | `info` | `trace` / `debug` / `info` / `warn` / `error` / `silent` |
-| `captureLogs` | `boolean` | `true` | Capture console logs into report |
+| `captureLogs` | `boolean` | `true` | Capture `ctrf.log.*` entries and route them to the active test or hook |
+| `captureCommands` | `boolean` | `true` | Capture meaningful WebDriver/Appium commands as debug log entries |
 | `environment` | `object` | `{}` | Custom environment metadata |
 | `tags` | `string[]` | `[]` | Tags applied to every test |
 | `testType` | `string` | `e2e` | Test type annotation |
@@ -271,7 +272,37 @@ browser.ctrf.log.info('message');
 
 ---
 
-## Report Output Example
+## Report Schema and Output Example
+
+Reports use a CTRF-compatible root object. By default, tests are grouped under
+`suite`; set `structureByHooks` to `false` only if your consumer expects the
+legacy top-level `tests` array.
+
+| Field | Type | Description |
+|---|---|---|
+| `version` | `string` | CTRF schema version (`"1.0"`) |
+| `tool` | `object` | Reporter name and framework version |
+| `summary` | `object` | Aggregate counts and run timing |
+| `suite` | `CtrfSuite[]` | Default hierarchical test output, grouped by suite and file |
+| `tests` | `CtrfTest[]` | Flat test output when hierarchy is disabled |
+| `environment` | `object` | Device, platform, browser, and custom environment metadata |
+| `attachments` | `CtrfAttachment[]` | Run-level artifacts such as Appium logs and HAR files |
+
+Each test, hook, and retry can include a `logs` array. Every log uses this
+shape:
+
+```json
+{
+  "timestamp": 1722100002500,
+  "level": "info",
+  "message": "Login button clicked"
+}
+```
+
+Test-body logs are written to `suite[].tests[].logs`; hook logs are written to
+`suite[].tests[].hooks[].logs` or `suite[].globalHooks[].logs`. In parallel
+WDIO runs, log and attachment state is isolated by worker CID, and each worker
+writes its own report file before the reports are merged.
 
 ```json
 {
@@ -289,8 +320,12 @@ browser.ctrf.log.info('message');
     "suites": 3,
     "flaky": 1
   },
-  "tests": [
+  "suite": [
     {
+      "name": "Login Suite",
+      "filepath": "/tests/login.spec.ts",
+      "tests": [
+        {
       "name": "should login with valid credentials",
       "status": "passed",
       "duration": 4523,
@@ -305,7 +340,18 @@ browser.ctrf.log.info('message');
       "platform": "Android",
       "device": "Pixel 7",
       "browser": "Chrome",
-      "log": "[2024-07-27T...] [INFO] Login button clicked",
+      "logs": [
+        {
+          "timestamp": 1722100002500,
+          "level": "info",
+          "message": "Login button clicked"
+        },
+        {
+          "timestamp": 1722100003000,
+          "level": "debug",
+          "message": "Clicked element"
+        }
+      ],
       "attachments": [
         {
           "name": "failure-screenshot",
@@ -329,7 +375,14 @@ browser.ctrf.log.info('message');
           "status": "passed",
           "duration": 1200,
           "start": 1722100001000,
-          "stop": 1722100002200
+          "stop": 1722100002200,
+          "logs": [
+            {
+              "timestamp": 1722100001500,
+              "level": "debug",
+              "message": "Executed script"
+            }
+          ]
         }
       ],
       "retriesDetail": [
@@ -339,7 +392,25 @@ browser.ctrf.log.info('message');
           "duration": 2100,
           "message": "Element not found",
           "trace": "Error: Element not found\n    at ...",
-          "log": "[2024-07-27T...] [ERROR] Element not found"
+          "logs": [
+            {
+              "timestamp": 1722100001800,
+              "level": "error",
+              "message": "Element not found"
+            }
+          ]
+        }
+      ]
+        }
+      ],
+      "globalHooks": [
+        {
+          "type": "before",
+          "title": "before all",
+          "status": "passed",
+          "duration": 300,
+          "start": 1722100000000,
+          "stop": 1722100000300
         }
       ]
     }
@@ -382,4 +453,3 @@ This project is **open source** and licensed under the **MIT License**.
 **MIT License** © 2026 Amar Tanwar
 
 See [LICENSE](LICENSE) file for details.
-
