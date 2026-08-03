@@ -85,6 +85,7 @@ export interface CtrfRetry {
   trace?: string;
   logs?: CtrfLogEntry[];
   log?: string;
+  hooks?: CtrfHook[];
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

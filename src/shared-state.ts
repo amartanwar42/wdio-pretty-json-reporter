@@ -60,6 +60,18 @@ const activeGlobalHooks = new Map<string, ActiveGlobalHookState | null>();
 const logSinks = new Map<string, ((entry: CtrfLogEntry) => void) | null>();
 
 /**
+ * Reporter-driven attachment destination, keyed by cid. Mirrors `logSinks`: the
+ * reporter is the only component that reliably tracks test/hook boundaries
+ * (including regular beforeEach/afterEach, which the service never tracks as an
+ * "active" window). Without this, an attachment added while a beforeEach/afterEach
+ * hook is running - e.g. a screenshot-on-failure helper called from the test
+ * suite's own afterEach - falls between `activeTests` (cleared once the test body
+ * finishes) and `activeGlobalHooks` (before-all/after-all only) and is silently
+ * dropped.
+ */
+const attachmentSinks = new Map<string, ((att: CtrfAttachment) => void) | null>();
+
+/**
  * Completed test data, nested by worker CID.  A queue is deliberately used for
  * each suite/title key: retries and distinct tests may legitimately have the
  * same display name.  A single value here used to let the later completion
@@ -152,8 +164,24 @@ export function setLogSink(sink: ((entry: CtrfLogEntry) => void) | null, cid?: s
   logSinks.set(resolveCid(cid), sink);
 }
 
+/**
+ * Set (or clear, with `null`) the destination for subsequently added attachments.
+ * Driven by the reporter at each test/hook boundary, same as `setLogSink`.
+ */
+export function setAttachmentSink(sink: ((att: CtrfAttachment) => void) | null, cid?: string): void {
+  attachmentSinks.set(resolveCid(cid), sink);
+}
+
 export function addAttachment(att: CtrfAttachment, cid?: string): void {
   const key = resolveCid(cid);
+
+  // The reporter-driven sink is authoritative once set: it knows exactly which
+  // test or hook (including beforeEach/afterEach) is currently executing.
+  const sink = attachmentSinks.get(key);
+  if (sink) {
+    sink(att);
+    return;
+  }
   const globalHook = activeGlobalHooks.get(key);
   if (globalHook) {
     globalHook.attachments.push(att);
@@ -298,6 +326,7 @@ export function clearAll(cid?: string): void {
   activeTests.delete(key);
   activeGlobalHooks.delete(key);
   logSinks.delete(key);
+  attachmentSinks.delete(key);
   archives.delete(key);
   globalHookLogs.delete(key);
   globalHookAttachments.delete(key);

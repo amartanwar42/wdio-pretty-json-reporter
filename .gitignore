@@ -5,5 +5,5 @@ coverage/
 .DS_Store
 .env
 *.tgz
-wdio-pretty-json
-wdio-pretty-json-merged
+wdio-pretty-json**
+wdio-pretty-json-merged**

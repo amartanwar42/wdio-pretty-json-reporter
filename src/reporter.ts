@@ -72,7 +72,11 @@ export default class CtrfReporter extends WDIOReporter {
   private runnerEndTime = 0;
   private globalAttachments: CtrfAttachment[] = [];
   private currentGlobalHookBeingProcessed: CtrfHook | null = null;
-  private pendingBeforeEachHooks: CtrfHook[] = [];
+  /** beforeEach hooks awaiting attribution to the test they belong to. `owner`
+   *  (from WDIO's `HookStats.currentTest`) pins a hook to a specific test/suite
+   *  so a hook for test B never gets attached to test A just because A started
+   *  first - WDIO does not guarantee hook:end fires before the next test:start. */
+  private pendingBeforeEachHooks: Array<{ hook: CtrfHook; owner: { title: string; suite: string } | null }> = [];
   private lastStartedTestState: InternalTestState | null = null;
   /** Current destination for logs, owned by the reporter (test or hook). Used
    *  both by the in-process log API (via shared.setLogSink) and by the
@@ -139,7 +143,8 @@ export default class CtrfReporter extends WDIOReporter {
   onSuiteStart(suite: SuiteStats): void {
     this.currentSuite = suite.title;
     this.routeLogsTo(null);
-    const state: InternalSuiteState = { 
+    this.routeAttachmentsTo(null);
+    const state: InternalSuiteState = {
       hooks: [],
       globalHooks: [],
       globalHookLogs: [],
@@ -160,29 +165,45 @@ export default class CtrfReporter extends WDIOReporter {
       state.currentAttempt += 1;
       state.attemptLogs = [];
       state.attemptStartTime = now;
+      // Hooks are captured per attempt (see saveRetryAttempt above); without
+      // this reset, a retried test's hooks array accumulates every attempt's
+      // beforeEach/afterEach on top of each other, showing e.g. two beforeEach
+      // entries with different statuses for what is really one test.
+      state.hooks = [];
     } else {
       this.createTestState(test, now);
     }
 
-    this.attachPendingHooks(this.testMap.get(key)!);
+    const state = this.testMap.get(key)!;
+    this.attachPendingHooks(state);
 
     // The reporter owns log attribution: route logs emitted during this test
     // body directly into the test's state, independent of the service.
     if (this.opts.captureLogs) {
-      const state = this.testMap.get(key)!;
       this.activeTestForLogs = state;
       this.routeLogsToTest(state);
     }
+    // Attachments (e.g. a manual screenshot call) must be attributed correctly
+    // regardless of the captureLogs toggle.
+    this.routeAttachmentsToTest(state);
 
-    this.log('trace', `Test started: ${test.title} (attempt ${this.testMap.get(key)!.currentAttempt})`);
+    this.log('trace', `Test started: ${test.title} (attempt ${state.currentAttempt})`);
   }
 
   /** Assigns the beforeEach hooks that ran immediately before this test and
-   *  marks it as the target for the afterEach hooks that follow. */
+   *  marks it as the target for the afterEach hooks that follow. Only hooks
+   *  with no known owner (older WDIO without `currentTest`) or whose owner
+   *  matches this test are consumed - hooks queued for a different test stay
+   *  queued instead of being misattributed. */
   private attachPendingHooks(state: InternalTestState): void {
     if (this.pendingBeforeEachHooks.length > 0) {
-      state.hooks.push(...this.pendingBeforeEachHooks);
-      this.pendingBeforeEachHooks = [];
+      const isMine = (owner: { title: string; suite: string } | null): boolean =>
+        owner === null || (owner.title === state.ctrfTest.name && owner.suite === state.ctrfTest.suite);
+      const mine = this.pendingBeforeEachHooks.filter((p) => isMine(p.owner));
+      if (mine.length > 0) {
+        state.hooks.push(...mine.map((p) => p.hook));
+        this.pendingBeforeEachHooks = this.pendingBeforeEachHooks.filter((p) => !isMine(p.owner));
+      }
     }
     this.lastStartedTestState = state;
   }
@@ -254,10 +275,11 @@ export default class CtrfReporter extends WDIOReporter {
     state.ctrfTest.stop = now;
     state.ctrfTest.duration = now - state.ctrfTest.start;
 
-    // Stop routing logs to this test; the following afterEach hook (if any)
-    // sets its own sink in onHookStart.
+    // Stop routing logs/attachments to this test; the following afterEach
+    // hook (if any) sets its own sink in onHookStart.
     if (this.activeTestForLogs === state) this.activeTestForLogs = null;
     this.routeLogsTo(null);
+    this.routeAttachmentsTo(null);
 
     this.applySharedTestData(state, this.currentSuite, test.title);
   }
@@ -330,6 +352,11 @@ export default class CtrfReporter extends WDIOReporter {
       });
     }
 
+    // Route attachments (e.g. a screenshot taken by the test suite's own
+    // beforeEach/afterEach) straight to this hook. Unlike logs, this is not
+    // gated by captureLogs - attachments are always attributed when produced.
+    this.routeAttachmentsToHook(hookData);
+
     (hook as unknown as Record<string, unknown>)._ctrfHook = hookData;
   }
 
@@ -346,8 +373,10 @@ export default class CtrfReporter extends WDIOReporter {
       if (this.activeHookForLogs === ctrfHook) this.activeHookForLogs = null;
       if (this.activeTestForLogs) {
         this.routeLogsToTest(this.activeTestForLogs);
+        this.routeAttachmentsToTest(this.activeTestForLogs);
       } else {
         this.routeLogsTo(null);
+        this.routeAttachmentsTo(null);
       }
 
       // WDIO surfaces hook failures inconsistently: sometimes via `error`,
@@ -386,14 +415,29 @@ export default class CtrfReporter extends WDIOReporter {
           }
         }
       } else if (ctrfHook.type === 'beforeEach') {
-        // Attribute to the next test that starts.
-        this.pendingBeforeEachHooks.push(ctrfHook);
-      } else if (ctrfHook.type === 'afterEach') {
-        // Attribute to the test that just ran.
-        if (this.lastStartedTestState) {
-          this.lastStartedTestState.hooks.push(ctrfHook);
+        // Prefer WDIO's own `currentTest` for attribution - it works regardless
+        // of event ordering. If the owning test has already started (hook:end
+        // raced behind test:start), attach directly - its own attachPendingHooks
+        // call already ran and won't run again. Otherwise queue it; fall back to
+        // "whichever test starts next" (the old behavior) when currentTest isn't
+        // populated (older WDIO versions).
+        const owner = this.hookOwner(hook);
+        const ownedState = owner ? this.testMap.get(this.buildTestKey(owner.suite, owner.title)) : undefined;
+        if (ownedState) {
+          ownedState.hooks.push(ctrfHook);
         } else {
-          this.pendingBeforeEachHooks.push(ctrfHook);
+          this.pendingBeforeEachHooks.push({ hook: ctrfHook, owner });
+        }
+      } else if (ctrfHook.type === 'afterEach') {
+        const owner = this.hookOwner(hook);
+        const ownedState = owner ? this.testMap.get(this.buildTestKey(owner.suite, owner.title)) : undefined;
+        // Fall back to whichever test most recently started, since older WDIO
+        // versions don't populate `currentTest` for hooks.
+        const target = ownedState ?? this.lastStartedTestState;
+        if (target) {
+          target.hooks.push(ctrfHook);
+        } else {
+          this.pendingBeforeEachHooks.push({ hook: ctrfHook, owner });
         }
       }
       
@@ -423,6 +467,40 @@ export default class CtrfReporter extends WDIOReporter {
       state.logs.push(entry);
       state.attemptLogs.push(entry);
     });
+  }
+
+  /** Single owner of attachment attribution, mirroring `routeLogsTo`. Needed
+   *  because `activeTests`/`activeGlobalHooks` (driven by the service) only
+   *  cover the test body and before-all/after-all hooks - an attachment added
+   *  during a regular beforeEach/afterEach has no service-tracked window to
+   *  land in and would otherwise be silently dropped. */
+  private routeAttachmentsTo(sink: ((att: CtrfAttachment) => void) | null): void {
+    shared.setAttachmentSink(sink, this.runnerCid);
+  }
+
+  private routeAttachmentsToTest(state: InternalTestState): void {
+    this.routeAttachmentsTo((att) => {
+      const normalized = this.normalizeAttachment(att);
+      if (normalized.category === 'screenshot') {
+        state.ctrfTest.attachments = [...(state.ctrfTest.attachments ?? []), normalized];
+      } else {
+        this.globalAttachments.push(normalized);
+      }
+    });
+  }
+
+  private routeAttachmentsToHook(hookData: CtrfHook): void {
+    this.routeAttachmentsTo((att) => {
+      const normalized = this.normalizeAttachment(att);
+      (hookData.attachments ??= []).push(normalized);
+    });
+  }
+
+  /** The test a beforeEach/afterEach hook belongs to, per WDIO's own
+   *  `HookStats.currentTest`. Returns null when WDIO doesn't populate it. */
+  private hookOwner(hook: HookStats): { title: string; suite: string } | null {
+    const currentTest = (hook as unknown as { currentTest?: string }).currentTest;
+    return currentTest ? { title: currentTest, suite: hook.parent ?? this.currentSuite } : null;
   }
 
   /** WDIO emits this for every WebDriver/Appium command in-process, correctly
@@ -488,10 +566,13 @@ export default class CtrfReporter extends WDIOReporter {
     };
   }
 
+  private buildTestKey(suite: string, title: string): string {
+    return `${this.currentSpecFile}::${suite}::${title}`;
+  }
+
   private getTestKey(test: TestStats): string {
     const suite = test.parent ?? this.currentSuite;
-    const file = this.currentSpecFile;
-    return `${file}::${suite}::${test.title}`;
+    return this.buildTestKey(suite, test.title);
   }
 
   private saveRetryAttempt(state: InternalTestState, now: number): void {
@@ -505,6 +586,7 @@ export default class CtrfReporter extends WDIOReporter {
       message: state.ctrfTest.message,
       trace: state.ctrfTest.trace,
       logs: state.attemptLogs.length > 0 ? [...state.attemptLogs] : undefined,
+      hooks: this.opts.includeHooks && state.hooks.length > 0 ? [...state.hooks] : undefined,
     });
   }
 
